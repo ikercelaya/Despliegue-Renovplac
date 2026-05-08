@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Renovebot — Panel</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: #f3f6f4; color: #17221d; }
+      .login {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+      }
+      .login form {
+        background: #fff;
+        padding: 24px;
+        border-radius: 10px;
+        border: 1px solid #dfe8e2;
+        box-shadow: 0 18px 40px rgba(20, 35, 28, 0.1);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        width: min(360px, 100%);
+      }
+      .login h1 { margin: 0; font-size: 20px; color: #143c32; }
+      .login input, .reply textarea, .reply input {
+        border: 1px solid #cfdad4;
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 14px;
+        font-family: inherit;
+      }
+      .login button, .actions button, .reply button {
+        background: #143c32;
+        color: #fff;
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .login button:disabled, .actions button:disabled { opacity: 0.6; cursor: not-allowed; }
+      .login .err { color: #b00020; font-size: 13px; }
+      .layout {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        height: 100vh;
+      }
+      .sidebar { background: #143c32; color: #fff; overflow-y: auto; }
+      .sidebar header {
+        padding: 14px 16px;
+        border-bottom: 1px solid #1d4f43;
+        display: flex; align-items: center; justify-content: space-between;
+      }
+      .sidebar h2 { margin: 0; font-size: 16px; }
+      .sidebar .logout {
+        background: transparent; color: #cceedd; border: 1px solid #2a604f;
+        padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
+      }
+      .conv-list { list-style: none; margin: 0; padding: 0; }
+      .conv-list li {
+        padding: 12px 16px;
+        border-bottom: 1px solid #1d4f43;
+        cursor: pointer;
+      }
+      .conv-list li:hover { background: #1d4f43; }
+      .conv-list li.active { background: #2a604f; }
+      .conv-list .name { font-size: 14px; font-weight: 700; }
+      .conv-list .meta { font-size: 12px; color: #cceedd; margin-top: 2px; }
+      .conv-list .status {
+        display: inline-block; font-size: 11px; padding: 2px 6px;
+        border-radius: 10px; background: #2fd07f; color: #10241d; margin-top: 4px;
+      }
+      .conv-list .status.budget_sent { background: #ffb84d; }
+      .conv-list .status.budget_accepted { background: #2fd07f; }
+      .conv-list .status.closed { background: #888; color: #fff; }
+      .main {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        background: #fff;
+      }
+      .conv-header {
+        padding: 14px 18px;
+        border-bottom: 1px solid #e0e7e3;
+        display: flex; align-items: center; justify-content: space-between;
+        flex-wrap: wrap; gap: 10px;
+      }
+      .conv-header .title { font-weight: 700; font-size: 16px; color: #143c32; }
+      .conv-header .sub { font-size: 13px; color: #5d6d66; margin-top: 2px; }
+      .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .actions button { font-size: 13px; padding: 6px 10px; }
+      .actions button.warn { background: #b00020; }
+      .actions button.alt { background: #fff; color: #143c32; border: 1px solid #143c32; }
+      .messages {
+        flex: 1; padding: 18px; overflow-y: auto; background: #f3f6f4;
+      }
+      .message-row { display: flex; margin-bottom: 12px; }
+      .message-row.user { justify-content: flex-end; }
+      .bubble {
+        max-width: 70%;
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-size: 14px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .bubble.bot { background: #fff; border: 1px solid #e1e8e3; }
+      .bubble.user { background: #d9fdd3; }
+      .bubble.admin { background: #fff9d6; border: 1px solid #ecdf90; }
+      .bubble small { display: block; color: #5d6d66; font-size: 11px; margin-top: 4px; }
+      .budget-card {
+        max-width: 80%;
+        margin-bottom: 12px;
+        padding: 12px;
+        background: #fff;
+        border: 1px solid #143c32;
+        border-radius: 8px;
+      }
+      .budget-card h4 { margin: 0 0 4px; color: #143c32; }
+      .budget-card .amount { font-size: 18px; font-weight: 800; color: #143c32; }
+      .budget-card .desc { font-size: 13px; white-space: pre-wrap; margin-top: 4px; }
+      .budget-card .tag {
+        display: inline-block; font-size: 11px; padding: 2px 6px;
+        border-radius: 10px; background: #ffb84d; color: #10241d; margin-top: 6px;
+      }
+      .budget-card .tag.accepted { background: #2fd07f; }
+      .reply {
+        border-top: 1px solid #e0e7e3;
+        padding: 12px;
+        display: flex;
+        gap: 8px;
+        background: #fff;
+      }
+      .reply textarea {
+        flex: 1;
+        resize: none;
+        height: 60px;
+      }
+      .empty {
+        flex: 1; display: grid; place-items: center; color: #5d6d66;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loginScreen" class="login">
+      <form id="loginForm">
+        <h1>Panel Renoveplac</h1>
+        <input type="password" id="pwd" placeholder="Contraseña de admin" required />
+        <button type="submit">Entrar</button>
+        <div class="err" id="loginErr"></div>
+      </form>
+    </div>
+
+    <div id="appScreen" class="layout" style="display:none">
+      <aside class="sidebar">
+        <header>
+          <h2>Conversaciones</h2>
+          <button class="logout" id="logoutBtn">Salir</button>
+        </header>
+        <ul class="conv-list" id="convList"></ul>
+      </aside>
+      <main class="main" id="mainPane">
+        <div class="empty">Selecciona una conversación</div>
+      </main>
+    </div>
+
+    <script>
+      const TOKEN_KEY = "renovebot.adminToken";
+      const loginScreen = document.getElementById("loginScreen");
+      const appScreen = document.getElementById("appScreen");
+      const loginForm = document.getElementById("loginForm");
+      const loginErr = document.getElementById("loginErr");
+      const pwdInput = document.getElementById("pwd");
+      const convList = document.getElementById("convList");
+      const mainPane = document.getElementById("mainPane");
+      const logoutBtn = document.getElementById("logoutBtn");
+
+      let token = localStorage.getItem(TOKEN_KEY) || null;
+      let activeId = null;
+      let pollTimer = null;
+
+      function authHeaders() {
+        return token ? { Authorization: "Bearer " + token } : {};
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function fmtDate(s) {
+        if (!s) return "";
+        const d = new Date(s);
+        return d.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
+      }
+
+      async function login(password) {
+        const r = await fetch("/api/admin/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.error || "Contraseña incorrecta.");
+        }
+        const data = await r.json();
+        token = data.token;
+        localStorage.setItem(TOKEN_KEY, token);
+      }
+
+      async function logout() {
+        token = null;
+        localStorage.removeItem(TOKEN_KEY);
+        clearInterval(pollTimer);
+        appScreen.style.display = "none";
+        loginScreen.style.display = "grid";
+      }
+
+      async function loadConversations() {
+        const r = await fetch("/api/admin/conversations", { headers: authHeaders() });
+        if (r.status === 401) return logout();
+        if (!r.ok) return;
+        const data = await r.json();
+        renderList(data.conversations || []);
+      }
+
+      function renderList(list) {
+        convList.innerHTML = "";
+        list.forEach((c) => {
+          const li = document.createElement("li");
+          if (c.id === activeId) li.classList.add("active");
+          const label = c.customer_name || c.customer_email || "(sin nombre)";
+          const meta = [c.work_type, c.customer_postal_code, fmtDate(c.updated_at)]
+            .filter(Boolean).join(" · ");
+          li.innerHTML =
+            '<div class="name">' + escapeHtml(label) + '</div>' +
+            '<div class="meta">' + escapeHtml(meta) + '</div>' +
+            '<span class="status ' + escapeHtml(c.status || "active") + '">' +
+            escapeHtml(c.status || "active") + "</span>";
+          li.addEventListener("click", () => openConversation(c.id));
+          convList.appendChild(li);
+        });
+      }
+
+      async function openConversation(id) {
+        activeId = id;
+        await loadConversations();
+        const r = await fetch("/api/admin/conversations/" + id, { headers: authHeaders() });
+        if (r.status === 401) return logout();
+        if (!r.ok) return;
+        const conv = await r.json();
+        renderConversation(conv);
+      }
+
+      function renderConversation(conv) {
+        const customer = [
+          conv.customer_name,
+          conv.customer_email,
+          conv.customer_phone,
+          conv.customer_postal_code,
+        ].filter(Boolean).join(" · ");
+        const messagesHtml = (conv.messages || []).map(renderMessageItem).join("");
+        const budgetsHtml = (conv.budgets || []).map(renderBudgetItem).join("");
+        const botEnabled = conv.bot_enabled !== false;
+        mainPane.innerHTML =
+          '<div class="conv-header">' +
+            '<div>' +
+              '<div class="title">' + escapeHtml(conv.customer_name || "(sin nombre)") + '</div>' +
+              '<div class="sub">' + escapeHtml(customer || "(sin datos de contacto)") +
+                (conv.work_type ? " — " + escapeHtml(conv.work_type) : "") + '</div>' +
+              (conv.initial_message ? '<div class="sub">"' + escapeHtml(conv.initial_message) + '"</div>' : "") +
+            '</div>' +
+            '<div class="actions">' +
+              '<button id="toggleBotBtn" class="alt">' + (botEnabled ? "Pausar bot" : "Reactivar bot") + '</button>' +
+              '<button id="closeBtn" class="warn">Cerrar conversación</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="messages" id="messagesPane">' + messagesHtml + budgetsHtml + '</div>' +
+          '<form class="reply" id="replyForm">' +
+            '<textarea id="replyText" placeholder="Escribe respuesta como Renoveplac..."></textarea>' +
+            '<button type="submit">Enviar</button>' +
+          '</form>';
+        const messagesPane = document.getElementById("messagesPane");
+        messagesPane.scrollTop = messagesPane.scrollHeight;
+        document.getElementById("replyForm").addEventListener("submit", onReply);
+        document.getElementById("toggleBotBtn").addEventListener("click", () => toggleBot(!botEnabled));
+        document.getElementById("closeBtn").addEventListener("click", closeConversation);
+      }
+
+      function renderMessageItem(m) {
+        const cls = m.role === "user" ? "user" : m.role === "admin" ? "admin" : "bot";
+        const who = m.role === "user" ? "Cliente" : m.role === "admin" ? "Admin (Renoveplac)" : "Bot";
+        return (
+          '<div class="message-row ' + cls + '">' +
+            '<div class="bubble ' + cls + '">' +
+              escapeHtml(m.content) +
+              '<small>' + who + " · " + fmtDate(m.created_at) + '</small>' +
+            '</div>' +
+          '</div>'
+        );
+      }
+
+      function renderBudgetItem(b) {
+        const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
+        const tag = b.status === "accepted"
+          ? '<span class="tag accepted">Aceptado · ' + fmtDate(b.accepted_at) + '</span>'
+          : '<span class="tag">' + escapeHtml(b.status) + '</span>';
+        return (
+          '<div class="budget-card">' +
+            '<h4>' + escapeHtml(b.title) + '</h4>' +
+            '<div class="amount">' + Number(b.amount_eur).toLocaleString("es-ES") + ' € <span style="font-weight:400;font-size:12px;">' + ivaTxt + '</span></div>' +
+            '<div class="desc">' + escapeHtml(b.description) + '</div>' +
+            tag +
+          '</div>'
+        );
+      }
+
+      async function onReply(e) {
+        e.preventDefault();
+        const ta = document.getElementById("replyText");
+        const text = ta.value.trim();
+        if (!text || !activeId) return;
+        const r = await fetch("/api/admin/conversations/" + activeId + "/reply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({ content: text }),
+        });
+        if (!r.ok) {
+          alert("Error enviando respuesta.");
+          return;
+        }
+        ta.value = "";
+        openConversation(activeId);
+      }
+
+      async function toggleBot(enabled) {
+        if (!activeId) return;
+        await fetch("/api/admin/conversations/" + activeId + "/toggle-bot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({ enabled }),
+        });
+        openConversation(activeId);
+      }
+
+      async function closeConversation() {
+        if (!activeId) return;
+        if (!confirm("Cerrar conversación? El cliente ya no podrá escribir.")) return;
+        await fetch("/api/admin/conversations/" + activeId + "/close", {
+          method: "POST",
+          headers: authHeaders(),
+        });
+        openConversation(activeId);
+      }
+
+      function startApp() {
+        loginScreen.style.display = "none";
+        appScreen.style.display = "grid";
+        loadConversations();
+        const hash = window.location.hash.replace(/^#/, "");
+        if (hash) openConversation(hash);
+        clearInterval(pollTimer);
+        pollTimer = setInterval(() => {
+          loadConversations();
+          if (activeId) openConversation(activeId);
+        }, 8000);
+      }
+
+      loginForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        loginErr.textContent = "";
+        try {
+          await login(pwdInput.value);
+          startApp();
+        } catch (err) {
+          loginErr.textContent = err.message;
+        }
+      });
+      logoutBtn.addEventListener("click", logout);
+
+      if (token) startApp();
+    </script>
+  </body>
+</html>

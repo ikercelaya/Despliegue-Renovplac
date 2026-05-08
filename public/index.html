@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Renovebot — Renoveplac</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #f3f6f4;
+        color: #17221d;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+      }
+      .chat-widget {
+        width: min(100%, 460px);
+        height: min(760px, calc(100vh - 40px));
+        background: #ffffff;
+        border: 1px solid #dfe8e2;
+        border-radius: 8px;
+        box-shadow: 0 18px 50px rgba(20, 35, 28, 0.14);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .chat-header {
+        background: #143c32;
+        color: #ffffff;
+        padding: 16px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .avatar {
+        width: 42px; height: 42px;
+        border-radius: 50%;
+        background: #2fd07f;
+        color: #10241d;
+        display: grid;
+        place-items: center;
+        font-weight: 800;
+        flex: 0 0 auto;
+      }
+      .chat-title { margin: 0; font-size: 17px; line-height: 1.2; }
+      .chat-status { margin: 3px 0 0; font-size: 13px; color: #cceedd; }
+      .messages {
+        flex: 1;
+        padding: 18px 14px;
+        overflow-y: auto;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)),
+          repeating-linear-gradient(45deg, #e5eee8 0, #e5eee8 1px, transparent 1px, transparent 18px);
+      }
+      .message-row { display: flex; margin-bottom: 12px; }
+      .message-row.user { justify-content: flex-end; }
+      .message {
+        max-width: 82%;
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-size: 15px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .message.bot { background: #ffffff; border: 1px solid #e1e8e3; border-top-left-radius: 2px; }
+      .message.user { background: #d9fdd3; border-top-right-radius: 2px; }
+      .message.admin { background: #fff9d6; border: 1px solid #ecdf90; border-top-left-radius: 2px; }
+      .budget-card {
+        max-width: 92%;
+        margin: 0 0 12px;
+        padding: 14px;
+        border: 1px solid #143c32;
+        background: #f3fbf6;
+        border-radius: 10px;
+      }
+      .budget-card h3 { margin: 0 0 6px; font-size: 15px; color: #143c32; }
+      .budget-card .amount { font-size: 20px; font-weight: 800; color: #143c32; margin: 6px 0; }
+      .budget-card .desc { font-size: 14px; line-height: 1.4; white-space: pre-wrap; }
+      .budget-card .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+      .budget-card button {
+        border: 0;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .budget-card .accept { background: #143c32; color: #fff; }
+      .budget-card .accepted-tag {
+        display: inline-block;
+        margin-top: 8px;
+        padding: 4px 8px;
+        background: #143c32;
+        color: #fff;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+      .typing { display: none; color: #5d6d66; font-size: 14px; padding: 0 16px 12px; background: #ffffff; }
+      .typing.visible { display: block; }
+      .chat-form {
+        display: flex;
+        gap: 10px;
+        padding: 12px;
+        border-top: 1px solid #e0e7e3;
+        background: #ffffff;
+      }
+      .chat-input {
+        flex: 1;
+        border: 1px solid #cfdad4;
+        border-radius: 8px;
+        padding: 12px;
+        font-size: 15px;
+        min-width: 0;
+      }
+      .chat-input:focus {
+        outline: 2px solid rgba(47, 208, 127, 0.3);
+        border-color: #31a66d;
+      }
+      .send-button {
+        border: 0;
+        border-radius: 8px;
+        background: #143c32;
+        color: #ffffff;
+        padding: 0 16px;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .send-button:disabled, .chat-input:disabled { opacity: 0.6; cursor: not-allowed; }
+      @media (max-width: 520px) {
+        body { padding: 0; }
+        .chat-widget { width: 100%; height: 100vh; border-radius: 0; border: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="chat-widget" aria-label="Chat de Renovebot">
+      <header class="chat-header">
+        <div class="avatar" aria-hidden="true">R</div>
+        <div>
+          <h1 class="chat-title">Renovebot</h1>
+          <p class="chat-status" id="chatStatus">Asistente de Renoveplac</p>
+        </div>
+      </header>
+
+      <section class="messages" id="messages" aria-live="polite"></section>
+      <div class="typing" id="typing">Renovebot está escribiendo...</div>
+
+      <form class="chat-form" id="chatForm">
+        <input
+          class="chat-input"
+          id="messageInput"
+          type="text"
+          autocomplete="off"
+          placeholder="Escribe tu mensaje..."
+          aria-label="Mensaje"
+        />
+        <button class="send-button" id="sendButton" type="submit">Enviar</button>
+      </form>
+    </main>
+
+    <script>
+      const messagesEl = document.getElementById("messages");
+      const typingEl = document.getElementById("typing");
+      const chatForm = document.getElementById("chatForm");
+      const messageInput = document.getElementById("messageInput");
+      const sendButton = document.getElementById("sendButton");
+      const chatStatus = document.getElementById("chatStatus");
+
+      const params = new URLSearchParams(window.location.search);
+      const urlToken = params.get("t");
+      const STORAGE_KEY = "renovebot.conversationId";
+
+      let conversationId = urlToken ? null : localStorage.getItem(STORAGE_KEY);
+      let accessToken = urlToken || null;
+      let lastMessageAt = null;
+      const renderedMessageIds = new Set();
+      const renderedBudgets = new Map();
+
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function renderMessage(msg) {
+        if (msg.id && renderedMessageIds.has(msg.id)) return;
+        if (msg.id) renderedMessageIds.add(msg.id);
+        if (msg.created_at) lastMessageAt = msg.created_at;
+        const row = document.createElement("div");
+        row.className = "message-row " + (msg.role === "user" ? "user" : "bot");
+        const bubble = document.createElement("div");
+        const cls = msg.role === "user" ? "user" : msg.role === "admin" ? "admin" : "bot";
+        bubble.className = "message " + cls;
+        bubble.textContent = msg.content;
+        row.appendChild(bubble);
+        messagesEl.appendChild(row);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function renderBudget(b) {
+        const existing = renderedBudgets.get(b.id);
+        if (existing) {
+          if (b.status === "accepted" && !existing.dataset.accepted) {
+            existing.querySelector(".actions").innerHTML =
+              '<span class="accepted-tag">Aceptado</span>';
+            existing.dataset.accepted = "1";
+          }
+          return;
+        }
+        const card = document.createElement("div");
+        card.className = "budget-card";
+        const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
+        card.innerHTML =
+          '<h3>' + escapeHtml(b.title) + '</h3>' +
+          '<div class="amount">' + Number(b.amount_eur).toLocaleString("es-ES") + ' € <span style="font-weight:400;font-size:12px;">' + ivaTxt + '</span></div>' +
+          '<div class="desc">' + escapeHtml(b.description) + '</div>' +
+          '<div class="actions"></div>';
+        const actions = card.querySelector(".actions");
+        if (b.status === "accepted") {
+          actions.innerHTML = '<span class="accepted-tag">Aceptado</span>';
+          card.dataset.accepted = "1";
+        } else {
+          const btn = document.createElement("button");
+          btn.className = "accept";
+          btn.textContent = "Aceptar presupuesto";
+          btn.addEventListener("click", () => acceptBudget(b.id, btn));
+          actions.appendChild(btn);
+        }
+        messagesEl.appendChild(card);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        renderedBudgets.set(b.id, card);
+      }
+
+      async function acceptBudget(id, btn) {
+        btn.disabled = true;
+        btn.textContent = "Aceptando...";
+        try {
+          const r = await fetch("/api/budget/" + id + "/accept", { method: "POST" });
+          if (!r.ok) throw new Error((await r.json()).error || "Error");
+          const card = renderedBudgets.get(id);
+          if (card) {
+            card.querySelector(".actions").innerHTML = '<span class="accepted-tag">Aceptado</span>';
+            card.dataset.accepted = "1";
+          }
+          poll();
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = "Aceptar presupuesto";
+          alert("No se pudo aceptar: " + err.message);
+        }
+      }
+
+      function setLoading(isLoading) {
+        typingEl.classList.toggle("visible", isLoading);
+        messageInput.disabled = isLoading;
+        sendButton.disabled = isLoading;
+        if (!isLoading) messageInput.focus();
+      }
+
+      async function loadInitial() {
+        if (!conversationId && !accessToken) {
+          renderMessage({
+            role: "assistant",
+            content: "Hola! Soy Renovebot. Cuéntame qué reforma tienes en mente y en qué zona sería.",
+          });
+          return;
+        }
+        try {
+          const q = accessToken
+            ? "token=" + encodeURIComponent(accessToken)
+            : "id=" + encodeURIComponent(conversationId);
+          const r = await fetch("/api/conversation?" + q);
+          if (!r.ok) throw new Error("not found");
+          const data = await r.json();
+          conversationId = data.conversationId;
+          accessToken = data.accessToken;
+          if (!urlToken) localStorage.setItem(STORAGE_KEY, conversationId);
+          (data.messages || []).forEach(renderMessage);
+          (data.budgets || []).forEach(renderBudget);
+          if (data.botEnabled === false) {
+            chatStatus.textContent = "Te atiende el equipo de Renoveplac";
+          }
+        } catch (err) {
+          localStorage.removeItem(STORAGE_KEY);
+          renderMessage({
+            role: "assistant",
+            content: "Hola! Soy Renovebot. Cuéntame qué reforma tienes en mente y en qué zona sería.",
+          });
+        }
+      }
+
+      async function sendMessage(text) {
+        renderMessage({ role: "user", content: text });
+        setLoading(true);
+        try {
+          const r = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: text,
+              conversationId,
+              token: accessToken,
+            }),
+          });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || "Error");
+          conversationId = data.conversationId;
+          if (data.accessToken) accessToken = data.accessToken;
+          if (!urlToken && conversationId) localStorage.setItem(STORAGE_KEY, conversationId);
+          if (data.botEnabled === false) {
+            chatStatus.textContent = "Te atiende el equipo de Renoveplac";
+          }
+          if (data.reply) renderMessage({ role: "assistant", content: data.reply });
+          if (data.budget) renderBudget(data.budget);
+        } catch (err) {
+          renderMessage({
+            role: "assistant",
+            content: "Ahora mismo no he podido responder. Detalle técnico: " + err.message,
+          });
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      async function poll() {
+        if (!conversationId && !accessToken) return;
+        try {
+          const q = new URLSearchParams();
+          if (conversationId) q.set("conversationId", conversationId);
+          else if (accessToken) q.set("token", accessToken);
+          if (lastMessageAt) q.set("since", lastMessageAt);
+          const r = await fetch("/api/messages?" + q.toString());
+          if (!r.ok) return;
+          const data = await r.json();
+          (data.messages || []).forEach(renderMessage);
+          (data.budgets || []).forEach(renderBudget);
+          if (data.botEnabled === false) {
+            chatStatus.textContent = "Te atiende el equipo de Renoveplac";
+          }
+        } catch (_e) {}
+      }
+
+      chatForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const text = messageInput.value.trim();
+        if (!text) return;
+        messageInput.value = "";
+        sendMessage(text);
+      });
+
+      loadInitial();
+      setInterval(poll, 6000);
+    </script>
+  </body>
+</html>
