@@ -208,14 +208,19 @@ app.post("/api/chat", async (req, res) => {
       return res.status(403).json({ error: "Esta conversación está cerrada." });
     }
 
-    await supabase.from("messages").insert({
-      conversation_id: conv.id,
-      role: "user",
-      content: userMessage,
-    });
+    const { data: userMsgRow } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id: conv.id,
+        role: "user",
+        content: userMessage,
+      })
+      .select()
+      .single();
 
     let botReply = "";
     let createdBudget = null;
+    let assistantMsgRow = null;
 
     if (conv.bot_enabled !== false) {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
@@ -252,11 +257,16 @@ app.post("/api/chat", async (req, res) => {
       createdBudget = result.budget;
 
       if (botReply) {
-        await supabase.from("messages").insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: botReply,
-        });
+        const { data } = await supabase
+          .from("messages")
+          .insert({
+            conversation_id: conv.id,
+            role: "assistant",
+            content: botReply,
+          })
+          .select()
+          .single();
+        assistantMsgRow = data;
       }
     }
 
@@ -266,6 +276,8 @@ app.post("/api/chat", async (req, res) => {
       accessToken: conv.access_token,
       botEnabled: conv.bot_enabled !== false,
       budget: createdBudget,
+      userMessage: userMsgRow,
+      assistantMessage: assistantMsgRow,
     });
   } catch (err) {
     console.error("[chat]", err);

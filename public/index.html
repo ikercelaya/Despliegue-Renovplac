@@ -178,6 +178,7 @@
       let conversationId = urlToken ? null : localStorage.getItem(STORAGE_KEY);
       let accessToken = urlToken || null;
       let lastMessageAt = null;
+      let chatRequestInFlight = false;
       const renderedMessageIds = new Set();
       const renderedBudgets = new Map();
 
@@ -298,8 +299,9 @@
       }
 
       async function sendMessage(text) {
-        renderMessage({ role: "user", content: text });
+        renderMessage({ role: "user", content: text, _local: true });
         setLoading(true);
+        chatRequestInFlight = true;
         try {
           const r = await fetch("/api/chat", {
             method: "POST",
@@ -318,7 +320,15 @@
           if (data.botEnabled === false) {
             chatStatus.textContent = "Te atiende el equipo de Renoveplac";
           }
-          if (data.reply) renderMessage({ role: "assistant", content: data.reply });
+          if (data.userMessage && data.userMessage.id) {
+            renderedMessageIds.add(data.userMessage.id);
+            if (data.userMessage.created_at) lastMessageAt = data.userMessage.created_at;
+          }
+          if (data.assistantMessage) {
+            renderMessage(data.assistantMessage);
+          } else if (data.reply) {
+            renderMessage({ role: "assistant", content: data.reply });
+          }
           if (data.budget) renderBudget(data.budget);
         } catch (err) {
           renderMessage({
@@ -327,10 +337,12 @@
           });
         } finally {
           setLoading(false);
+          chatRequestInFlight = false;
         }
       }
 
       async function poll() {
+        if (chatRequestInFlight) return;
         if (!conversationId && !accessToken) return;
         try {
           const q = new URLSearchParams();
