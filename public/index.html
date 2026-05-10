@@ -35,6 +35,22 @@
         align-items: center;
         gap: 12px;
       }
+      .chat-header-text { flex: 1; min-width: 0; }
+      .reset-button {
+        flex: 0 0 auto;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        background: transparent;
+        color: #ffffff;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        transition: background 0.15s, transform 0.2s;
+      }
+      .reset-button:hover { background: rgba(255, 255, 255, 0.15); }
+      .reset-button:active { transform: rotate(-90deg); }
       .avatar {
         width: 42px; height: 42px;
         border-radius: 50%;
@@ -141,10 +157,16 @@
     <main class="chat-widget" aria-label="Chat de Renovebot">
       <header class="chat-header">
         <div class="avatar" aria-hidden="true">R</div>
-        <div>
+        <div class="chat-header-text">
           <h1 class="chat-title">Renovebot</h1>
           <p class="chat-status" id="chatStatus">Asistente de Renoveplac</p>
         </div>
+        <button class="reset-button" id="resetButton" type="button" title="Empezar conversación nueva" aria-label="Empezar conversación nueva">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="1 4 1 10 7 10"></polyline>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+          </svg>
+        </button>
       </header>
 
       <section class="messages" id="messages" aria-live="polite"></section>
@@ -324,12 +346,12 @@
             renderedMessageIds.add(data.userMessage.id);
             if (data.userMessage.created_at) lastMessageAt = data.userMessage.created_at;
           }
+          if (data.budget) renderBudget(data.budget);
           if (data.assistantMessage) {
             renderMessage(data.assistantMessage);
           } else if (data.reply) {
             renderMessage({ role: "assistant", content: data.reply });
           }
-          if (data.budget) renderBudget(data.budget);
         } catch (err) {
           renderMessage({
             role: "assistant",
@@ -366,6 +388,12 @@
         if (!text) return;
         messageInput.value = "";
         sendMessage(text);
+      });
+
+      document.getElementById("resetButton").addEventListener("click", () => {
+        if (!confirm("¿Empezar una conversación nueva? Se perderá el historial actual.")) return;
+        localStorage.removeItem(STORAGE_KEY);
+        location.href = location.pathname;
       });
 
       loadInitial();

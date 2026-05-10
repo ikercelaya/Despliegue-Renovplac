@@ -164,7 +164,6 @@ app.post("/api/form", async (req, res) => {
         <p>Un saludo,<br>${COMPANY_NAME}<br>Renoveplac · ${COMPANY_EMAIL}</p>`,
     });
 
-    // Aviso interno a Renoveplac
     await sendEmail({
       to: COMPANY_EMAIL,
       subject: `Nuevo lead desde web — ${name}${workType ? ` (${workType})` : ""}`,
@@ -251,6 +250,41 @@ app.post("/api/chat", async (req, res) => {
             .eq("id", conv.id);
           return budget;
         },
+        onNotifyHuman: async (input) => {
+          const reasonLabel = ({
+            queja: "Queja / reclamación",
+            solicita_humano: "El cliente pide hablar con persona",
+            lead_premium: "Lead premium (administrador, presidente, arquitecto, aparejador)",
+            alto_ticket: "Alto ticket (>15.000 €)",
+            fuera_de_zona_obra_grande: "Fuera de zona pero obra grande (valorar)",
+          })[input.reason] || input.reason;
+
+          const lines = [
+            `Aviso del bot: se requiere intervención humana.`,
+            "",
+            `Motivo: ${reasonLabel}`,
+            "",
+            `Resumen del bot:`,
+            input.summary || "(sin resumen)",
+            "",
+            "Datos del lead:",
+            `- Nombre: ${conv.customer_name || "(sin nombre)"}`,
+            `- Email: ${conv.customer_email || "(sin email)"}`,
+            `- Teléfono: ${conv.customer_phone || "(sin teléfono)"}`,
+            `- Código postal: ${conv.customer_postal_code || "(sin CP)"}`,
+            `- Tipo de obra: ${conv.work_type || "(no especificado)"}`,
+            "",
+            `Conversación completa: ${PUBLIC_URL}/admin#${conv.id}`,
+          ].join("\n");
+
+          await sendEmail({
+            to: COMPANY_EMAIL,
+            replyTo: conv.customer_email || undefined,
+            subject: `Aviso bot — ${reasonLabel} — ${conv.customer_name || "lead"}`,
+            text: lines,
+          });
+          return { ok: true };
+        },
       });
 
       botReply = result.text || "";
@@ -315,7 +349,6 @@ app.get("/api/conversation", async (req, res) => {
   }
 });
 
-// Polling para nuevas respuestas (sobre todo cuando admin toma el control)
 app.get("/api/messages", async (req, res) => {
   try {
     const { conversationId, token, since } = req.query;
