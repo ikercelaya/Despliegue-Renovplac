@@ -17,7 +17,7 @@ const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
 
-app.use(express.json({ limit: "200kb" }));
+app.use(express.json({ limit: "8mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use((req, res, next) => {
@@ -53,7 +53,7 @@ async function loadConversation(conversationId) {
   if (error || !conv) return null;
   const { data: msgs } = await supabase
     .from("messages")
-    .select("id, role, content, created_at")
+    .select("id, role, content, image_url, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
   return { ...conv, messages: msgs || [] };
@@ -83,11 +83,18 @@ function buildContext(conv) {
 
 function toAnthropicMessages(messages) {
   return messages
-    .filter((m) => m && m.content && (m.role === "user" || m.role === "assistant" || m.role === "admin"))
-    .map((m) => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: String(m.content).slice(0, 6000),
-    }));
+    .filter((m) => m && (m.content || m.image_url) && (m.role === "user" || m.role === "assistant" || m.role === "admin"))
+    .map((m) => {
+      const role = m.role === "user" ? "user" : "assistant";
+      const text = String(m.content || "").slice(0, 6000);
+      if (m.image_url && m.role === "user") {
+        const blocks = [];
+        if (text) blocks.push({ type: "text", text });
+        blocks.push({ type: "image", source: { type: "url", url: m.image_url } });
+        return { role, content: blocks };
+      }
+      return { role, content: text };
+    });
 }
 
 async function fetchBudgets(conversationId) {
@@ -99,10 +106,60 @@ async function fetchBudgets(conversationId) {
   return data || [];
 }
 
+async function safeSendEmail(payload, label) {
+  try {
+    return await sendEmail(payload);
+  } catch (err) {
+    console.warn(`[email] envío fallido (${label || "sin etiqueta"}):`, err.message);
+    return { error: err.message };
+  }
+}
+
 // ---------- Páginas ----------
 
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 app.get("/admin", (_req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
+
+// ---------- Subida de imagen ----------
+
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
+
+app.post("/api/upload", async (req, res) => {
+  try {
+    const { data, mimeType, conversationId, token } = req.body || {};
+    if (!data || !mimeType) return res.status(400).json({ error: "Falta data o mimeType." });
+    if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) {
+      return res.status(400).json({ error: "Tipo de imagen no permitido." });
+    }
+    let conv = null;
+    if (conversationId) conv = await loadConversation(String(conversationId));
+    else if (token) conv = await loadByToken(String(token));
+    if (!conv) return res.status(404).json({ error: "Conversación no encontrada." });
+
+    let base64 = String(data);
+    const match = /^data:[^;]+;base64,(.+)$/.exec(base64);
+    if (match) base64 = match[1];
+    const buffer = Buffer.from(base64, "base64");
+    if (buffer.length === 0) return res.status(400).json({ error: "Imagen vacía." });
+    if (buffer.length > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: "Imagen demasiado grande (máx 5 MB)." });
+    }
+
+    const ext = (mimeType.split("/")[1] || "jpg").replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
+    const fileName = `${conv.id}/${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext}`;
+
+    const { error: upErr } = await supabase.storage
+      .from("chat-images")
+      .upload(fileName, buffer, { contentType: mimeType, upsert: false });
+    if (upErr) throw upErr;
+
+    const { data: pub } = supabase.storage.from("chat-images").getPublicUrl(fileName);
+    return res.json({ url: pub.publicUrl });
+  } catch (err) {
+    console.error("[upload]", err);
+    return res.status(500).json({ error: "No se pudo subir la imagen." });
+  }
+});
 
 // ---------- Formulario WordPress ----------
 
@@ -152,7 +209,7 @@ app.post("/api/form", async (req, res) => {
     });
 
     const chatUrl = `${PUBLIC_URL}/?t=${token}`;
-    await sendEmail({
+    await safeSendEmail({
       to: email,
       replyTo: COMPANY_EMAIL,
       subject: "Hemos recibido tu solicitud — Renoveplac",
@@ -162,13 +219,13 @@ app.post("/api/form", async (req, res) => {
         <p>Para agilizar tu presupuesto, sigue la conversación con nuestro asistente desde el siguiente enlace:</p>
         <p><a href="${chatUrl}">${chatUrl}</a></p>
         <p>Un saludo,<br>${COMPANY_NAME}<br>Renoveplac · ${COMPANY_EMAIL}</p>`,
-    });
+    }, "form/cliente");
 
-    await sendEmail({
+    await safeSendEmail({
       to: COMPANY_EMAIL,
       subject: `Nuevo lead desde web — ${name}${workType ? ` (${workType})` : ""}`,
       text: `Lead recibido desde el formulario de la web.\n\nNombre: ${name}\nEmail: ${email}\nTeléfono: ${phone || "(sin teléfono)"}\nCP: ${postalCode || "(sin CP)"}\nTipo de obra: ${workType || "(no especificado)"}\nMensaje:\n${message || "(sin mensaje)"}\n\nVer conversación: ${PUBLIC_URL}/admin#${conv.id}`,
-    });
+    }, "form/empresa");
 
     return res.json({ ok: true, conversationId: conv.id, chatUrl });
   } catch (err) {
@@ -184,9 +241,10 @@ app.post("/api/chat", async (req, res) => {
     if (!process.env.ANTHROPIC_API_KEY) {
       return res.status(500).json({ error: "Falta ANTHROPIC_API_KEY en el servidor." });
     }
-    const { message, conversationId, token } = req.body || {};
+    const { message, conversationId, token, image_url: rawImageUrl } = req.body || {};
     const userMessage = String(message || "").trim();
-    if (!userMessage) return res.status(400).json({ error: "Mensaje vacío." });
+    const imageUrl = String(rawImageUrl || "").trim();
+    if (!userMessage && !imageUrl) return res.status(400).json({ error: "Mensaje vacío." });
 
     let conv = null;
     if (conversationId) conv = await loadConversation(conversationId);
@@ -212,7 +270,8 @@ app.post("/api/chat", async (req, res) => {
       .insert({
         conversation_id: conv.id,
         role: "user",
-        content: userMessage,
+        content: userMessage || (imageUrl ? "(imagen)" : ""),
+        image_url: imageUrl || null,
       })
       .select()
       .single();
@@ -225,7 +284,7 @@ app.post("/api/chat", async (req, res) => {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
       const history = toAnthropicMessages([
         ...(conv.messages || []),
-        { role: "user", content: userMessage },
+        { role: "user", content: userMessage, image_url: imageUrl || null },
       ]);
 
       const result = await runConversation({
@@ -277,12 +336,12 @@ app.post("/api/chat", async (req, res) => {
             `Conversación completa: ${PUBLIC_URL}/admin#${conv.id}`,
           ].join("\n");
 
-          await sendEmail({
+          await safeSendEmail({
             to: COMPANY_EMAIL,
             replyTo: conv.customer_email || undefined,
             subject: `Aviso bot — ${reasonLabel} — ${conv.customer_name || "lead"}`,
             text: lines,
-          });
+          }, "notify_human");
           return { ok: true };
         },
       });
@@ -319,7 +378,7 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// ---------- Conversación pública (cargar mensajes + presupuestos) ----------
+// ---------- Conversación pública ----------
 
 app.get("/api/conversation", async (req, res) => {
   try {
@@ -413,12 +472,12 @@ app.post("/api/budget/:id/accept", async (req, res) => {
       `Conversación completa: ${PUBLIC_URL}/admin#${conv.id}`,
     ].join("\n");
 
-    await sendEmail({
+    await safeSendEmail({
       to: COMPANY_EMAIL,
       replyTo: conv.customer_email || undefined,
       subject: `Presupuesto aceptado — ${conv.customer_name || "lead"} — ${budget.amount_eur} EUR`,
       text: summary,
-    });
+    }, "budget/accept");
 
     await supabase.from("messages").insert({
       conversation_id: conv.id,

@@ -696,11 +696,17 @@
         const role = m.role === "user" ? "user" : m.role === "admin" ? "admin" : "bot";
         const who = role === "user" ? "Cliente" : role === "admin" ? "Renoveplac" : "Renovebot";
         const initialsAvatar = role === "admin" ? "RP" : "RB";
+        const imageHtml = m.image_url
+          ? '<a href="' + escapeHtml(m.image_url) + '" target="_blank" rel="noopener"><img src="' + escapeHtml(m.image_url) + '" alt="Imagen adjunta" style="display:block;max-width:280px;max-height:280px;border-radius:8px;margin-bottom:6px;cursor:zoom-in;" /></a>'
+          : "";
+        const textVal = String(m.content || "");
+        const textHtml = (textVal && textVal !== "(imagen)") ? escapeHtml(textVal) : "";
         return (
           '<div class="msg-group ' + role + '">' +
             (role === "user" ? "" : '<div class="avatar-msg ' + role + '">' + escapeHtml(initialsAvatar) + '</div>') +
             '<div class="bubble ' + role + '">' +
-              escapeHtml(m.content) +
+              imageHtml +
+              textHtml +
               '<span class="meta"><strong>' + escapeHtml(who) + '</strong> · ' + escapeHtml(fmtDateTime(m.created_at)) + '</span>' +
             '</div>' +
           '</div>'
