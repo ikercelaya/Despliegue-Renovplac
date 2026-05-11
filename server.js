@@ -46,13 +46,13 @@ function requireAdmin(req, res, next) {
 async function loadConversation(conversationId) {
   if (!conversationId) return null;
   const { data: conv, error } = await supabase
-    .from("conversations")
+    .from("bot_conversations")
     .select("*")
     .eq("id", conversationId)
     .maybeSingle();
   if (error || !conv) return null;
   const { data: msgs } = await supabase
-    .from("messages")
+    .from("bot_messages")
     .select("id, role, content, image_url, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
@@ -62,7 +62,7 @@ async function loadConversation(conversationId) {
 async function loadByToken(token) {
   if (!token) return null;
   const { data, error } = await supabase
-    .from("conversations")
+    .from("bot_conversations")
     .select("id")
     .eq("access_token", token)
     .maybeSingle();
@@ -99,7 +99,7 @@ function toAnthropicMessages(messages) {
 
 async function fetchBudgets(conversationId) {
   const { data } = await supabase
-    .from("budgets")
+    .from("bot_budgets")
     .select("id, title, description, amount_eur, iva_included, status, created_at, accepted_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
@@ -185,7 +185,7 @@ app.post("/api/form", async (req, res) => {
 
     const token = generateToken();
     const { data: conv, error } = await supabase
-      .from("conversations")
+      .from("bot_conversations")
       .insert({
         customer_name: name,
         customer_email: email,
@@ -202,7 +202,7 @@ app.post("/api/form", async (req, res) => {
 
     const firstName = name.split(" ")[0];
     const greeting = `Hola ${firstName}, soy Renovebot, el asistente de Renoveplac. Hemos recibido tu solicitud${workType ? ` sobre ${workType.toLowerCase()}` : ""}. Para preparar un presupuesto orientativo, cuéntame un poco más: ¿qué dimensiones aproximadas tiene la zona y para cuándo te gustaría empezar?`;
-    await supabase.from("messages").insert({
+    await supabase.from("bot_messages").insert({
       conversation_id: conv.id,
       role: "assistant",
       content: greeting,
@@ -253,7 +253,7 @@ app.post("/api/chat", async (req, res) => {
     if (!conv) {
       const newToken = generateToken();
       const { data, error } = await supabase
-        .from("conversations")
+        .from("bot_conversations")
         .insert({ source: "widget", access_token: newToken })
         .select()
         .single();
@@ -266,7 +266,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const { data: userMsgRow } = await supabase
-      .from("messages")
+      .from("bot_messages")
       .insert({
         conversation_id: conv.id,
         role: "user",
@@ -292,7 +292,7 @@ app.post("/api/chat", async (req, res) => {
         messages: history,
         onBudget: async (input) => {
           const { data: budget, error } = await supabase
-            .from("budgets")
+            .from("bot_budgets")
             .insert({
               conversation_id: conv.id,
               title: input.title,
@@ -304,7 +304,7 @@ app.post("/api/chat", async (req, res) => {
             .single();
           if (error) throw error;
           await supabase
-            .from("conversations")
+            .from("bot_conversations")
             .update({ status: "budget_sent" })
             .eq("id", conv.id);
           return budget;
@@ -351,7 +351,7 @@ app.post("/api/chat", async (req, res) => {
 
       if (botReply) {
         const { data } = await supabase
-          .from("messages")
+          .from("bot_messages")
           .insert({
             conversation_id: conv.id,
             role: "assistant",
@@ -433,8 +433,8 @@ app.post("/api/budget/:id/accept", async (req, res) => {
   try {
     const { id } = req.params;
     const { data: budget, error } = await supabase
-      .from("budgets")
-      .select("*, conversations(*)")
+      .from("bot_budgets")
+      .select("*, bot_conversations(*)")
       .eq("id", id)
       .maybeSingle();
     if (error || !budget) return res.status(404).json({ error: "Presupuesto no encontrado." });
@@ -443,16 +443,16 @@ app.post("/api/budget/:id/accept", async (req, res) => {
     }
 
     await supabase
-      .from("budgets")
+      .from("bot_budgets")
       .update({ status: "accepted", accepted_at: new Date().toISOString() })
       .eq("id", id);
 
     await supabase
-      .from("conversations")
+      .from("bot_conversations")
       .update({ status: "budget_accepted" })
       .eq("id", budget.conversation_id);
 
-    const conv = budget.conversations;
+    const conv = budget.bot_conversations;
     const ivaLine = budget.iva_included ? "(IVA incluido)" : "+ IVA aparte";
     const summary = [
       "Presupuesto aceptado por el cliente.",
@@ -479,7 +479,7 @@ app.post("/api/budget/:id/accept", async (req, res) => {
       text: summary,
     }, "budget/accept");
 
-    await supabase.from("messages").insert({
+    await supabase.from("bot_messages").insert({
       conversation_id: conv.id,
       role: "assistant",
       content:
@@ -504,7 +504,7 @@ app.post("/api/admin/login", (req, res) => {
 
 app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
   const { data, error } = await supabase
-    .from("conversations")
+    .from("bot_conversations")
     .select(
       "id, customer_name, customer_email, customer_phone, customer_postal_code, work_type, status, bot_enabled, created_at, updated_at, source"
     )
@@ -524,7 +524,7 @@ app.get("/api/admin/conversations/:id", requireAdmin, async (req, res) => {
 app.post("/api/admin/conversations/:id/reply", requireAdmin, async (req, res) => {
   const content = String(req.body?.content || "").trim();
   if (!content) return res.status(400).json({ error: "Mensaje vacío." });
-  const { error } = await supabase.from("messages").insert({
+  const { error } = await supabase.from("bot_messages").insert({
     conversation_id: req.params.id,
     role: "admin",
     content,
@@ -536,7 +536,7 @@ app.post("/api/admin/conversations/:id/reply", requireAdmin, async (req, res) =>
 app.post("/api/admin/conversations/:id/toggle-bot", requireAdmin, async (req, res) => {
   const enabled = !!req.body?.enabled;
   const { error } = await supabase
-    .from("conversations")
+    .from("bot_conversations")
     .update({ bot_enabled: enabled })
     .eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
@@ -545,7 +545,7 @@ app.post("/api/admin/conversations/:id/toggle-bot", requireAdmin, async (req, re
 
 app.post("/api/admin/conversations/:id/close", requireAdmin, async (req, res) => {
   const { error } = await supabase
-    .from("conversations")
+    .from("bot_conversations")
     .update({ status: "closed" })
     .eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
