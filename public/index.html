@@ -192,16 +192,24 @@
         border-color: #31a66d;
       }
       .send-button {
+        flex: 0 0 auto;
+        width: 44px;
+        height: 44px;
         border: 0;
-        border-radius: 8px;
-        background: #143c32;
-        color: #ffffff;
-        padding: 0 16px;
-        font-size: 15px;
-        font-weight: 700;
+        border-radius: 50%;
+        background: #2fd07f;
+        color: #10241d;
         cursor: pointer;
+        display: grid;
+        place-items: center;
+        transition: background 0.15s, transform 0.1s;
+        box-shadow: 0 2px 6px rgba(47, 208, 127, 0.35);
       }
-      .send-button:disabled, .chat-input:disabled { opacity: 0.6; cursor: not-allowed; }
+      .send-button:hover { background: #28b86d; }
+      .send-button:active { transform: scale(0.94); }
+      .send-button svg { width: 20px; height: 20px; }
+      .send-button:disabled, .chat-input:disabled { opacity: 0.5; cursor: not-allowed; }
+      .send-button:disabled { background: #a9d8bc; box-shadow: none; }
       @media (max-width: 520px) {
         body { padding: 0; }
         .chat-widget { width: 100%; height: 100vh; border-radius: 0; border: 0; }
@@ -248,7 +256,11 @@
             placeholder="Escribe tu mensaje..."
             aria-label="Mensaje"
           />
-          <button class="send-button" id="sendButton" type="submit">Enviar</button>
+          <button class="send-button" id="sendButton" type="submit" aria-label="Enviar">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M8 5v14l11-7z"></path>
+            </svg>
+          </button>
         </form>
       </div>
     </main>
