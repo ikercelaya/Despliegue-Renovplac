@@ -8,6 +8,7 @@ const { supabase } = require("./lib/db");
 const { sendEmail } = require("./lib/email");
 const { buildSystemPrompt } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
+const wa = require("./lib/whatsapp");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -17,7 +18,10 @@ const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
 
-app.use(express.json({ limit: "8mb" }));
+app.use(express.json({
+  limit: "8mb",
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use((req, res, next) => {
@@ -550,6 +554,280 @@ app.post("/api/admin/conversations/:id/close", requireAdmin, async (req, res) =>
     .eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ ok: true });
+});
+
+// ---------- WhatsApp ----------
+
+async function loadConversationByPhone(phone) {
+  if (!phone) return null;
+  const { data } = await supabase
+    .from("bot_conversations")
+    .select("*")
+    .eq("customer_phone", phone)
+    .eq("channel", "whatsapp")
+    .order("updated_at", { ascending: false })
+    .limit(1);
+  if (!data || data.length === 0) return null;
+  const conv = data[0];
+  const { data: msgs } = await supabase
+    .from("bot_messages")
+    .select("id, role, content, image_url, created_at")
+    .eq("conversation_id", conv.id)
+    .order("created_at", { ascending: true });
+  return { ...conv, messages: msgs || [] };
+}
+
+async function acceptBudgetInternal(budgetId) {
+  await supabase
+    .from("bot_budgets")
+    .update({ status: "accepted", accepted_at: new Date().toISOString() })
+    .eq("id", budgetId);
+  const { data: budget } = await supabase
+    .from("bot_budgets")
+    .select("*, bot_conversations(*)")
+    .eq("id", budgetId)
+    .maybeSingle();
+  if (!budget) return;
+  const conv = budget.bot_conversations;
+  await supabase
+    .from("bot_conversations")
+    .update({ status: "budget_accepted" })
+    .eq("id", budget.conversation_id);
+  const ivaLine = budget.iva_included ? "(IVA incluido)" : "+ IVA aparte";
+  const summary = [
+    "Presupuesto aceptado por el cliente.",
+    "",
+    `Cliente: ${conv.customer_name || "(sin nombre)"}`,
+    `Email: ${conv.customer_email || "(sin email)"}`,
+    `Teléfono: ${conv.customer_phone || "(sin teléfono)"}`,
+    `Canal: ${conv.channel || "web"}`,
+    `Tipo de obra: ${conv.work_type || "(no especificado)"}`,
+    "",
+    `Título: ${budget.title}`,
+    `Importe orientativo: ${budget.amount_eur} EUR ${ivaLine}`,
+    "",
+    "Descripción:",
+    budget.description,
+    "",
+    `Conversación completa: ${PUBLIC_URL}/admin#${conv.id}`,
+  ].join("\n");
+  await safeSendEmail({
+    to: COMPANY_EMAIL,
+    replyTo: conv.customer_email || undefined,
+    subject: `Presupuesto aceptado — ${conv.customer_name || "lead"} — ${budget.amount_eur} EUR`,
+    text: summary,
+  }, "budget/accept");
+}
+
+// Verificación del webhook
+app.get("/api/whatsapp/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    console.log("[whatsapp] webhook verificado");
+    return res.status(200).send(challenge);
+  }
+  console.warn("[whatsapp] verificación fallida");
+  return res.sendStatus(403);
+});
+
+// Recepción de mensajes
+app.post("/api/whatsapp/webhook", async (req, res) => {
+  res.sendStatus(200);
+
+  try {
+    if (process.env.WHATSAPP_APP_SECRET) {
+      const sig = req.headers["x-hub-signature-256"];
+      if (!wa.verifyWebhookSignature(req.rawBody, sig, process.env.WHATSAPP_APP_SECRET)) {
+        console.warn("[whatsapp] firma inválida, ignorado");
+        return;
+      }
+    }
+
+    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+    if (!value) return;
+
+    const messages = value.messages || [];
+    if (messages.length === 0) return;
+
+    const wamsg = messages[0];
+    const from = wamsg.from;
+    const msgType = wamsg.type;
+    const contactName = value.contacts?.[0]?.profile?.name || null;
+
+    let userMessage = "";
+    let imageBuffer = null;
+    let imageMime = null;
+
+    if (msgType === "text") {
+      userMessage = wamsg.text?.body || "";
+    } else if (msgType === "image") {
+      try {
+        const dl = await wa.downloadMedia(wamsg.image.id);
+        imageBuffer = dl.buffer;
+        imageMime = dl.mimeType;
+        userMessage = wamsg.image?.caption || "";
+      } catch (err) {
+        console.error("[whatsapp] error descargando imagen:", err.message);
+        userMessage = wamsg.image?.caption || "(imagen no procesable)";
+      }
+    } else {
+      userMessage = `(tipo de mensaje no soportado: ${msgType})`;
+    }
+
+    let conv = await loadConversationByPhone(from);
+    if (!conv) {
+      const newToken = generateToken();
+      const { data, error } = await supabase
+        .from("bot_conversations")
+        .insert({
+          customer_name: contactName,
+          customer_phone: from,
+          source: "whatsapp",
+          channel: "whatsapp",
+          access_token: newToken,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      conv = { ...data, messages: [] };
+    }
+
+    if (conv.status === "closed") return;
+
+    let imageUrl = null;
+    if (imageBuffer) {
+      const ext = (imageMime.split("/")[1] || "jpg").replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
+      const fileName = `${conv.id}/${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from("chat-images")
+        .upload(fileName, imageBuffer, { contentType: imageMime, upsert: false });
+      if (!upErr) {
+        const { data: pub } = supabase.storage.from("chat-images").getPublicUrl(fileName);
+        imageUrl = pub.publicUrl;
+      } else {
+        console.warn("[whatsapp] error subiendo imagen:", upErr.message);
+      }
+    }
+
+    const acceptRegex = /^\s*(acepto|si\s+acepto|quiero\s+aceptar|aceptar)\b/i;
+    if (acceptRegex.test(userMessage)) {
+      const { data: pending } = await supabase
+        .from("bot_budgets")
+        .select("id")
+        .eq("conversation_id", conv.id)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (pending && pending.length > 0) {
+        await supabase.from("bot_messages").insert({
+          conversation_id: conv.id,
+          role: "user",
+          content: userMessage,
+          image_url: imageUrl,
+        });
+        await acceptBudgetInternal(pending[0].id);
+        const confirmText =
+          "He registrado tu aceptación del presupuesto orientativo. Luis, de Renoveplac, se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
+        await supabase.from("bot_messages").insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: confirmText,
+        });
+        await wa.sendText(from, confirmText);
+        return;
+      }
+    }
+
+    await supabase.from("bot_messages").insert({
+      conversation_id: conv.id,
+      role: "user",
+      content: userMessage || (imageUrl ? "(imagen)" : ""),
+      image_url: imageUrl,
+    });
+
+    if (conv.bot_enabled === false) return;
+
+    const fullConv = await loadConversation(conv.id);
+    const systemPrompt = buildSystemPrompt(
+      buildContext(fullConv) + "\nCANAL: WhatsApp. El cliente NO tiene botones; para aceptar un presupuesto debe responder 'ACEPTO'."
+    );
+    const history = toAnthropicMessages(fullConv?.messages || []);
+
+    const result = await runConversation({
+      systemPrompt,
+      messages: history,
+      onBudget: async (input) => {
+        const { data: budget, error } = await supabase
+          .from("bot_budgets")
+          .insert({
+            conversation_id: conv.id,
+            title: input.title,
+            description: input.description,
+            amount_eur: Number(input.amount_eur) || 0,
+            iva_included: !!input.iva_included,
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        await supabase
+          .from("bot_conversations")
+          .update({ status: "budget_sent" })
+          .eq("id", conv.id);
+        return budget;
+      },
+      onNotifyHuman: async (input) => {
+        const reasonLabel = ({
+          queja: "Queja / reclamación",
+          solicita_humano: "El cliente pide hablar con persona",
+          lead_premium: "Lead premium",
+          alto_ticket: "Alto ticket (>15.000 €)",
+          fuera_de_zona_obra_grande: "Fuera de zona pero obra grande (valorar)",
+        })[input.reason] || input.reason;
+        const lines = [
+          `Aviso del bot (WhatsApp): ${reasonLabel}`,
+          "",
+          `Resumen: ${input.summary || "(sin resumen)"}`,
+          "",
+          `Cliente: ${conv.customer_name || "(sin nombre)"} · ${from}`,
+          `Conversación: ${PUBLIC_URL}/admin#${conv.id}`,
+        ].join("\n");
+        await safeSendEmail({
+          to: COMPANY_EMAIL,
+          subject: `Aviso bot WA — ${reasonLabel} — ${conv.customer_name || from}`,
+          text: lines,
+        }, "notify_human");
+        return { ok: true };
+      },
+    });
+
+    let botReply = result.text || "";
+    if (result.budget) {
+      const b = result.budget;
+      const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
+      const card =
+        "\n\n━━━━━━━━━━━━━━━━━━\n" +
+        `📋 *PRESUPUESTO ORIENTATIVO*\n` +
+        `*${b.title}*\n` +
+        `Importe: *${Number(b.amount_eur).toLocaleString("es-ES")} €* ${ivaTxt}\n\n` +
+        `${b.description}\n` +
+        "━━━━━━━━━━━━━━━━━━\n\n" +
+        `Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.`;
+      botReply = (botReply ? botReply + "\n" : "") + card;
+    }
+
+    if (botReply) {
+      await supabase.from("bot_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: botReply,
+      });
+      await wa.sendText(from, botReply);
+    }
+  } catch (err) {
+    console.error("[whatsapp/webhook]", err);
+  }
 });
 
 app.listen(port, () => {
