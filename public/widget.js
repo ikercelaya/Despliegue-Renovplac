@@ -9,15 +9,14 @@
 
   var style = document.createElement("style");
   style.textContent =
-    ".rb-root{position:fixed;right:20px;bottom:100px;z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;}" +
+    ".rb-root{position:fixed;right:20px;bottom:20px;z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;}" +
     ".rb-launcher-row{display:flex;align-items:center;gap:12px;}" +
-    ".rb-bubble-tip{background:#ffffff;color:#0a1428;border-radius:18px;padding:10px 16px;box-shadow:0 10px 28px rgba(10,20,40,0.18);cursor:pointer;display:none;flex-direction:column;align-items:flex-start;gap:2px;max-width:240px;position:relative;animation:rbFadeIn 0.35s ease-out;}" +
-    ".rb-bubble-tip.rb-visible{display:flex;}" +
+    ".rb-bubble-tip{background:#ffffff;color:#0a1428;border-radius:18px;padding:10px 16px;box-shadow:0 10px 28px rgba(10,20,40,0.18);cursor:pointer;display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:240px;position:relative;animation:rbFadeIn 0.35s ease-out;}" +
+    ".rb-bubble-tip.rb-hidden{display:none;}" +
     ".rb-bubble-tip::after{content:'';position:absolute;right:-7px;top:50%;transform:translateY(-50%);border:7px solid transparent;border-left-color:#ffffff;}" +
     ".rb-bubble-tip .rb-name{font-size:13px;font-weight:700;color:#0a1428;display:flex;align-items:center;gap:6px;}" +
     ".rb-bubble-tip .rb-status-dot{width:8px;height:8px;border-radius:50%;background:#2fd07f;display:inline-block;box-shadow:0 0 0 3px rgba(47,208,127,0.25);}" +
     ".rb-bubble-tip .rb-msg{font-size:13px;color:#3a4554;line-height:1.3;}" +
-    ".rb-bubble-tip .rb-close-tip{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:#0a1428;color:#ffffff;border:0;font-size:13px;line-height:1;cursor:pointer;display:grid;place-items:center;font-weight:bold;padding:0;}" +
     ".rb-launcher{position:relative;width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#ff8c1a 0%,#ff4d1a 100%);color:#ffffff;border:0;cursor:pointer;box-shadow:0 10px 28px rgba(255,77,26,0.45);display:flex;align-items:center;justify-content:center;transition:transform 0.18s ease;padding:0;}" +
     ".rb-launcher:hover{transform:scale(1.06);}" +
     ".rb-launcher svg{width:38px;height:38px;}" +
@@ -31,7 +30,7 @@
     ".rb-frame-wrap iframe{width:100%;height:100%;border:0;display:block;}" +
     "@keyframes rbFadeIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}" +
     "@keyframes rbPulse{0%{transform:scale(1);opacity:0.55;}100%{transform:scale(1.45);opacity:0;}}" +
-    "@media (max-width:520px){.rb-frame-wrap{position:fixed;right:0;bottom:0;left:0;top:0;width:100vw;height:100vh;border-radius:0;}.rb-root{right:14px;bottom:90px;}.rb-bubble-tip{max-width:200px;}}";
+    "@media (max-width:520px){.rb-frame-wrap{position:fixed;right:0;bottom:0;left:0;top:0;width:100vw;height:100vh;border-radius:0;}.rb-root{right:14px;bottom:14px;}.rb-bubble-tip{max-width:200px;}}";
   document.head.appendChild(style);
 
   var BOT_SVG = '<svg class="rb-icon-bot" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
@@ -62,7 +61,6 @@
   var tip = document.createElement("div");
   tip.className = "rb-bubble-tip";
   tip.innerHTML =
-    '<button class="rb-close-tip" type="button" aria-label="Cerrar">&times;</button>' +
     '<div class="rb-name"><span class="rb-status-dot"></span>Renovebot</div>' +
     '<div class="rb-msg">Te ayudo a solicitar tu presupuesto</div>';
 
@@ -77,28 +75,18 @@
   root.appendChild(wrap);
   root.appendChild(launcherRow);
 
-  var TIP_DISMISSED_KEY = "renovebot.tipDismissed";
-
-  function showTip() {
-    if (sessionStorage.getItem(TIP_DISMISSED_KEY) === "1") return;
-    if (wrap.classList.contains("rb-open")) return;
-    tip.classList.add("rb-visible");
-  }
-  function hideTip() {
-    tip.classList.remove("rb-visible");
-  }
-
   function openChat(token) {
     if (token) {
       iframe.src = base + "/?t=" + encodeURIComponent(token);
     }
     wrap.classList.add("rb-open");
     btn.classList.add("rb-open-state");
-    hideTip();
+    tip.classList.add("rb-hidden");
   }
   function closeChat() {
     wrap.classList.remove("rb-open");
     btn.classList.remove("rb-open-state");
+    tip.classList.remove("rb-hidden");
   }
   function toggleChat() {
     if (wrap.classList.contains("rb-open")) closeChat();
@@ -106,19 +94,10 @@
   }
 
   btn.addEventListener("click", toggleChat);
-  tip.addEventListener("click", function (e) {
-    if (e.target && e.target.classList.contains("rb-close-tip")) {
-      e.stopPropagation();
-      sessionStorage.setItem(TIP_DISMISSED_KEY, "1");
-      hideTip();
-      return;
-    }
-    openChat();
-  });
+  tip.addEventListener("click", function () { openChat(); });
 
   function attach() {
     document.body.appendChild(root);
-    setTimeout(showTip, 1500);
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", attach);
