@@ -3,22 +3,24 @@
 Chatbot de Renoveplac (reformas integrales en Lliria, Valencia) con:
 
 - Chat embebible en `renoveplac.com` (widget flotante).
+- **Canal WhatsApp** vía Cloud API de Meta (mismo bot, mismo histórico, en el número de la empresa).
 - Recogida del formulario de la web → conversación iniciada por el bot + email al cliente.
-- Persistencia de conversaciones en **Supabase**.
+- Persistencia de conversaciones en **Supabase** (incluye subida de imágenes del chat a Storage).
 - **Panel admin** (`/admin`) para ver, responder y pausar el bot por conversación.
-- Presupuestos orientativos con botón de **aceptar** que envía un email a `contacto@renoveplac.com`.
+- Presupuestos orientativos con botón de **aceptar** en web y respuesta `ACEPTO` por WhatsApp; en ambos casos envía un email a `contacto@renoveplac.com`.
 - Base de conocimiento del bot en `info/` (datos de la empresa, FAQs).
 
 ## Estructura
 
 ```
 .
-├── server.js              Express con todos los endpoints
+├── server.js              Express con todos los endpoints (chat web, admin, formulario WP, WhatsApp)
 ├── lib/
-│   ├── claude.js          Llamada a Anthropic + tool create_budget
+│   ├── claude.js          Llamada a Anthropic + tools create_budget y notify_human
 │   ├── db.js              Cliente Supabase
 │   ├── email.js           Nodemailer SMTP
-│   └── prompt.js          System prompt construido con info/
+│   ├── prompt.js          System prompt construido con info/
+│   └── whatsapp.js        Cloud API de Meta (envío, descarga de media, firma de webhooks)
 ├── public/
 │   ├── index.html         Chat del cliente (con token o widget)
 │   ├── admin.html         Panel de Renoveplac
@@ -71,9 +73,17 @@ SMTP_FROM=Renoveplac <contacto@renoveplac.com>
 
 ADMIN_PASSWORD=cambia_esta_contrasena
 FORM_SECRET=un_valor_aleatorio_largo
+
+# WhatsApp Cloud API (Meta) — ver sección "Conectar WhatsApp" más abajo
+WHATSAPP_VERIFY_TOKEN=cadena_aleatoria_que_inventes
+WHATSAPP_APP_SECRET=clave_secreta_de_la_app
+WHATSAPP_TOKEN=EAAxxxxxxxxxxx_token_permanente_del_usuario_de_sistema
+WHATSAPP_PHONE_NUMBER_ID=identificador_del_numero_de_telefono
+WHATSAPP_BUSINESS_ACCOUNT_ID=identificador_de_la_cuenta_de_whatsapp_business
+WHATSAPP_API_VERSION=v21.0
 ```
 
-`PUBLIC_URL` es la URL pública del bot (la usa para los enlaces del email).
+`PUBLIC_URL` es la URL pública del bot (la usa para los enlaces del email y debe coincidir con el dominio que configures como Callback URL del webhook de WhatsApp).
 
 ## 3. Ejecutar local
 
@@ -200,7 +210,8 @@ Edita estos archivos y redeploya. El bot los carga al arrancar y los inyecta en 
 | `/admin` | GET | Panel |
 | `/widget.js` | GET | Script del widget |
 | `/api/form` | POST | Webhook del formulario WP |
-| `/api/chat` | POST | `{ message, conversationId?, token? }` |
+| `/api/chat` | POST | `{ message, conversationId?, token?, image_url? }` |
+| `/api/upload` | POST | Subida de imagen del chat a Supabase Storage (`{ data, mimeType, conversationId?, token? }`) |
 | `/api/conversation` | GET | `?token=` o `?id=` |
 | `/api/messages` | GET | Polling con `?since=ISO_DATE` |
 | `/api/budget/:id/accept` | POST | Aceptar presupuesto |
@@ -210,12 +221,62 @@ Edita estos archivos y redeploya. El bot los carga al arrancar y los inyecta en 
 | `/api/admin/conversations/:id/reply` | POST | Mensaje desde admin |
 | `/api/admin/conversations/:id/toggle-bot` | POST | `{ enabled: bool }` |
 | `/api/admin/conversations/:id/close` | POST | Cerrar |
+| `/api/whatsapp/webhook` | GET | Verificación del webhook (handshake con `hub.verify_token`) |
+| `/api/whatsapp/webhook` | POST | Recepción de mensajes entrantes de WhatsApp |
+
+## 11. Conectar WhatsApp (Cloud API de Meta)
+
+El bot recibe y responde mensajes en el número de la empresa usando la **Cloud API** de Meta. Cuando un cliente escribe al WhatsApp, el webhook `POST /api/whatsapp/webhook` recibe el mensaje, lo guarda en la misma tabla `bot_conversations` (con `channel = 'whatsapp'`), llama al modelo y responde por WhatsApp. Si el bot genera un presupuesto, lo manda como una tarjeta de texto pidiendo que el cliente responda `ACEPTO` para confirmarlo.
+
+### Requisitos previos en Meta
+
+1. **Portafolio empresarial** verificado en Business Manager (`business.facebook.com`).
+2. **Cuenta de WhatsApp Business (WABA)** creada y aprobada dentro de ese portafolio.
+3. **Aplicación de Meta** (tipo Empresa) con el producto **WhatsApp** añadido y en modo Producción.
+4. **Número de teléfono** registrado en el WABA, con PIN de verificación en dos pasos configurado (estado: "Registrado").
+5. **Usuario de sistema** con control total sobre el WABA, usado para generar un token permanente.
+
+### Variables que hay que definir
+
+| Variable | Dónde se saca |
+| --- | --- |
+| `WHATSAPP_VERIFY_TOKEN` | Cadena aleatoria que inventas. Debe coincidir con la que pones en el panel del webhook de Meta. |
+| `WHATSAPP_APP_SECRET` | App Dashboard → **Configuración de la aplicación** → **Básica** → **Clave secreta de la app** → *Mostrar*. |
+| `WHATSAPP_TOKEN` | Business Manager → **Usuarios del sistema** → usuario API → **Generar token** con permisos `whatsapp_business_messaging` y `whatsapp_business_management`. **Caducidad: Nunca**. |
+| `WHATSAPP_PHONE_NUMBER_ID` | App Dashboard → **WhatsApp → Configuración de la API**: campo *Identificador del número de teléfono* del número de producción. |
+| `WHATSAPP_BUSINESS_ACCOUNT_ID` | Mismo panel, campo *WhatsApp Business Account ID*. No lo usa el código en runtime, pero es útil para gestionar plantillas y suscripciones por API. |
+| `WHATSAPP_API_VERSION` | Opcional. Por defecto `v21.0`. |
+
+### Configurar el webhook en Meta
+
+1. Sube todas las variables anteriores a Vercel (Settings → Environment Variables) y haz **Redeploy**.
+2. App Dashboard → **WhatsApp → Configuración** (o **Webhooks**) → **Editar**:
+   - **URL de devolución de llamada**: `https://TU_DOMINIO/api/whatsapp/webhook`
+   - **Token de verificación**: el mismo valor que pusiste en `WHATSAPP_VERIFY_TOKEN`.
+3. Pulsa **Verificar y guardar**. Meta llamará a tu endpoint con un GET; si Vercel responde 200 + el `hub.challenge`, queda guardado. Si falla, revisa que el redeploy esté hecho y que el verify token coincida exactamente.
+4. En la sección **Campos del webhook**, suscríbete a **`messages`** (es el único que el código usa por ahora).
+5. Vuelve a **WhatsApp → Configuración de la API** y activa el toggle **Subscribe webhooks** del número de producción.
+
+### Probar la integración
+
+- Envía un WhatsApp desde tu móvil al número de Renoveplac.
+- En los logs de Vercel debería aparecer `[whatsapp] webhook verificado` (la primera vez) y, después, los mensajes entrantes.
+- El bot responde por WhatsApp aplicando las mismas reglas que en la web: cualifica el lead, pide datos y termina con un presupuesto orientativo.
+- Si el bot genera un presupuesto y el cliente responde `ACEPTO` (o variaciones: "si acepto", "aceptar"...), se marca como aceptado y se manda el email a `contacto@renoveplac.com`.
+
+### Notas
+
+- **Ventana de 24 horas**: dentro de las 24 h posteriores al último mensaje del cliente, el bot puede contestar libremente. Pasado ese plazo solo puedes enviar **plantillas pre-aprobadas** (el código no lo hace por ahora; si lo necesitas, hay `wa.sendTemplate` ya implementado en `lib/whatsapp.js`).
+- **Método de pago**: para mensajes de pago (templates fuera de la ventana de 24 h) Meta exige método de pago en el WABA. Para conversaciones iniciadas por el cliente y respondidas dentro de la ventana, el tier gratuito de Meta cubre las primeras 1000 conversaciones/mes.
+- Si quieres que el panel `/admin` también funcione para conversaciones de WhatsApp: ya lo hace, `bot_enabled` y respuestas del admin se aplican igual, pero las respuestas del admin desde el panel **no** se reenvían automáticamente a WhatsApp (quedan solo en la BD). Si en algún momento quieres reenviarlas también por WhatsApp, hay que añadirlo en `POST /api/admin/conversations/:id/reply`.
 
 ## Seguridad
 
 - No subas `.env` al repo. La `service_role` de Supabase tiene permisos totales sobre la BD.
 - `ADMIN_PASSWORD` viaja en el header `Authorization: Bearer ...` — usa siempre HTTPS (Vercel ya da HTTPS por defecto).
 - `FORM_SECRET` evita que cualquiera spamee el endpoint `/api/form`.
+- `WHATSAPP_APP_SECRET` se usa para validar la firma HMAC-SHA256 de cada webhook entrante (`X-Hub-Signature-256`). Si no se define, el código acepta los webhooks sin firmar — en producción **debe** estar siempre definida.
+- `WHATSAPP_TOKEN` y `WHATSAPP_APP_SECRET` son los secretos más sensibles del bot: con ellos cualquiera puede enviar mensajes desde el número de la empresa.
 
 ## Datos de Renoveplac (referencia)
 
