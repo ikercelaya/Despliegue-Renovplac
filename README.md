@@ -284,3 +284,9 @@ El bot recibe y responde mensajes en el número de la empresa usando la **Cloud 
 - Email: **contacto@renoveplac.com**
 - Teléfono / WhatsApp: **631188813**
 - Web: **renoveplac.com**
+
+## Autor
+
+Proyecto diseñado, desarrollado e integrado por **Iker Celaya Buezo** ([LinkedIn](https://www.linkedin.com/in/iker-celaya-buezo-819b1b251)) en nombre de **Propulsa** ([ia-propulsa.com](https://ia-propulsa.com)).
+
+> Propulsa — Soluciones de IA y automatización para negocios.
