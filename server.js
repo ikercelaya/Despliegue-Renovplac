@@ -634,6 +634,16 @@ app.get("/api/whatsapp/webhook", (req, res) => {
 
 // Recepción de mensajes
 app.post("/api/whatsapp/webhook", async (req, res) => {
+  // Salida rápida: si NO es un evento de mensajes reales, contestar 200 y salir
+  // (evita que tests de Meta con account_alerts/etc dejen procesos colgados)
+  const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+  const field = req.body?.entry?.[0]?.changes?.[0]?.field;
+  const messages = value?.messages || [];
+  if (field !== "messages" || messages.length === 0) {
+    console.log(`[whatsapp] evento ignorado (field=${field}, sin messages)`);
+    return res.sendStatus(200);
+  }
+
   res.sendStatus(200);
 
   try {
@@ -644,12 +654,6 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         return;
       }
     }
-
-    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
-    if (!value) return;
-
-    const messages = value.messages || [];
-    if (messages.length === 0) return;
 
     const wamsg = messages[0];
     const from = wamsg.from;
