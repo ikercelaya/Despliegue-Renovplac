@@ -8,6 +8,7 @@ const { supabase } = require("./lib/db");
 const { sendEmail } = require("./lib/email");
 const { buildSystemPrompt } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
+const { INVALID_PHONE_REPLY, getPhoneSubmissionStatus } = require("./lib/phone");
 const wa = require("./lib/whatsapp");
 
 const app = express();
@@ -106,6 +107,12 @@ function recentMessages(messages, limit) {
   if (!Array.isArray(messages)) return [];
   const n = Math.max(1, Number(limit) || 24);
   return messages.slice(-n);
+}
+
+function botRecentlyAskedForPhone(messages) {
+  if (!Array.isArray(messages)) return false;
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  return /\b(tel[eé]fono|m[oó]vil|whats(?:app)?|n[uú]mero)\b/i.test(lastAssistant?.content || "");
 }
 
 async function fetchBudgets(conversationId) {
@@ -290,6 +297,41 @@ app.post("/api/chat", async (req, res) => {
     let botReply = "";
     let createdBudget = null;
     let assistantMsgRow = null;
+    const phoneStatus = getPhoneSubmissionStatus(userMessage);
+    const phoneAttempted =
+      phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage));
+
+    if (phoneStatus.valid && !conv.customer_phone && conv.channel !== "whatsapp") {
+      await supabase
+        .from("bot_conversations")
+        .update({ customer_phone: phoneStatus.normalized })
+        .eq("id", conv.id);
+      conv.customer_phone = phoneStatus.normalized;
+    }
+
+    if (conv.bot_enabled !== false && phoneAttempted && !phoneStatus.valid) {
+      botReply = INVALID_PHONE_REPLY;
+      const { data } = await supabase
+        .from("bot_messages")
+        .insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: botReply,
+        })
+        .select()
+        .single();
+      assistantMsgRow = data;
+
+      return res.json({
+        reply: botReply,
+        conversationId: conv.id,
+        accessToken: conv.access_token,
+        botEnabled: true,
+        budget: null,
+        userMessage: userMsgRow,
+        assistantMessage: assistantMsgRow,
+      });
+    }
 
     if (conv.bot_enabled !== false) {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
@@ -768,6 +810,24 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     });
 
     if (conv.bot_enabled === false) return;
+
+    const phoneStatus = getPhoneSubmissionStatus(userMessage);
+    const phoneAttempted =
+      phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage));
+    if (phoneAttempted && !phoneStatus.valid) {
+      await supabase.from("bot_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: INVALID_PHONE_REPLY,
+      });
+      const sendStartedAt = Date.now();
+      const sendResult = await wa.sendText(from, INVALID_PHONE_REPLY);
+      console.log(
+        `[whatsapp] ${waMessageId}: telefono invalido respondido en ${Date.now() - sendStartedAt}ms ` +
+          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+      );
+      return;
+    }
 
     const fullConv = await loadConversation(conv.id);
     const systemPrompt = buildSystemPrompt(
