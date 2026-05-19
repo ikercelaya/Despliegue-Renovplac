@@ -217,6 +217,20 @@
       .conv-list .time { font-size: 11px; color: #8c98b3; flex: 0 0 auto; }
       .conv-list .preview { font-size: 12.5px; color: #a2afcc; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .conv-list .badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+      .conv-delete {
+        flex: 0 0 auto;
+        width: 30px; height: 30px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: transparent;
+        color: #8c98b3;
+        cursor: pointer;
+        display: grid; place-items: center;
+        margin-top: 2px;
+        transition: all 0.15s;
+      }
+      .conv-delete:hover { background: var(--warn-soft); border-color: #f4cfcf; color: var(--warn); }
+      .conv-delete svg { width: 15px; height: 15px; }
       .empty-list { padding: 40px 20px; text-align: center; color: #8c98b3; font-size: 13px; }
 
       .badge {
@@ -499,6 +513,19 @@
       function statusLabel(s) {
         return ({ active: "Activa", budget_sent: "Presupuesto enviado", budget_accepted: "Presupuesto aceptado", closed: "Cerrada" })[s] || "Activa";
       }
+      function sourceLabel(c) {
+        if (c.channel === "whatsapp" || c.source === "whatsapp") return "WhatsApp";
+        if (c.source === "form") return "Formulario web";
+        return "Widget chat";
+      }
+      function renderEmptyPane() {
+        mainPane.innerHTML =
+          '<div class="empty">' +
+            '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
+            '<h3>Selecciona una conversacion</h3>' +
+            '<p>Elige un chat de la izquierda para ver el historial y responder.</p>' +
+          '</div>';
+      }
       function toast(msg, type) {
         const el = document.createElement("div");
         el.className = "toast" + (type ? " " + type : "");
@@ -566,7 +593,7 @@
           if (c.id === activeId) li.classList.add("active");
           const label = c.customer_name || c.customer_email || "Sin nombre";
           const status = c.status || "active";
-          const subline = c.work_type || c.customer_postal_code || c.customer_email || "—";
+          const subline = c.work_type || c.customer_postal_code || c.customer_phone || c.customer_email || sourceLabel(c);
           const botPaused = c.bot_enabled === false;
           li.innerHTML =
             '<div class="conv-avatar">' + escapeHtml(initials(label)) + '</div>' +
@@ -582,27 +609,53 @@
               '</div>' +
             '</div>';
           li.addEventListener("click", () => openConversation(c.id));
+          const deleteBtn = document.createElement("button");
+          deleteBtn.className = "conv-delete";
+          deleteBtn.type = "button";
+          deleteBtn.title = "Eliminar conversacion";
+          deleteBtn.setAttribute("aria-label", "Eliminar conversacion");
+          deleteBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+          deleteBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            deleteConversation(c.id, label);
+          });
+          li.appendChild(deleteBtn);
           convList.appendChild(li);
         });
       }
 
-      async function openConversation(id) {
+      async function openConversation(id, options = {}) {
         activeId = id;
         renderList();
         try {
           const r = await fetch("/api/admin/conversations/" + id, { headers: authHeaders() });
           if (r.status === 401) return logout();
-          if (!r.ok) { toast("No se pudo cargar la conversación.", "error"); return; }
+          if (!r.ok) {
+            if (!options.silent) toast("No se pudo cargar la conversacion.", "error");
+            return;
+          }
           const conv = await r.json();
-          renderConversation(conv);
-        } catch (_) { toast("Error de red.", "error"); }
+          const idx = allConversations.findIndex((c) => c.id === conv.id);
+          if (idx >= 0) {
+            allConversations[idx] = { ...allConversations[idx], ...conv };
+            renderList();
+          }
+          renderConversation(conv, options);
+        } catch (_) { if (!options.silent) toast("Error de red.", "error"); }
       }
 
-      function renderConversation(conv) {
+      function renderConversation(conv, options = {}) {
         const name = conv.customer_name || "Cliente sin nombre";
         const status = conv.status || "active";
         const botEnabled = conv.bot_enabled !== false;
         const isClosed = status === "closed";
+        const previousPane = document.getElementById("messagesPane");
+        const preserveScroll = options.preserveScroll && previousPane;
+        const previousTop = previousPane ? previousPane.scrollTop : 0;
+        const previousHeight = previousPane ? previousPane.scrollHeight : 0;
+        const wasNearBottom = previousPane
+          ? previousPane.scrollHeight - previousPane.scrollTop - previousPane.clientHeight < 90
+          : true;
 
         const headerHtml =
           '<div class="conv-header">' +
@@ -632,7 +685,7 @@
           { label: "Email", value: conv.customer_email },
           { label: "Teléfono", value: conv.customer_phone },
           { label: "Código postal", value: conv.customer_postal_code },
-          { label: "Origen", value: conv.source === "form" ? "Formulario web" : "Widget chat" },
+          { label: "Origen", value: sourceLabel(conv) },
           { label: "Creada", value: fmtDateTime(conv.created_at) },
         ];
         const leadHtml =
@@ -676,7 +729,13 @@
           replyHtml;
 
         const messagesPane = document.getElementById("messagesPane");
-        if (messagesPane) messagesPane.scrollTop = messagesPane.scrollHeight;
+        if (messagesPane) {
+          if (preserveScroll && !wasNearBottom) {
+            messagesPane.scrollTop = Math.max(0, previousTop + messagesPane.scrollHeight - previousHeight);
+          } else {
+            messagesPane.scrollTop = messagesPane.scrollHeight;
+          }
+        }
 
         const toggleBtn = document.getElementById("toggleBotBtn");
         if (toggleBtn) toggleBtn.addEventListener("click", () => toggleBot(!botEnabled));
@@ -790,6 +849,26 @@
         } catch (_) { toast("No se pudo cerrar la conversación.", "error"); }
       }
 
+      async function deleteConversation(id, label) {
+        if (!id) return;
+        if (!confirm("Eliminar definitivamente la conversacion de " + label + "?")) return;
+        try {
+          const r = await fetch("/api/admin/conversations/" + id + "/delete", {
+            method: "POST",
+            headers: authHeaders(),
+          });
+          if (!r.ok) throw new Error("delete failed");
+          if (activeId === id) {
+            activeId = null;
+            renderEmptyPane();
+          }
+          toast("Conversacion eliminada.", "success");
+          await loadConversations();
+        } catch (_) {
+          toast("No se pudo eliminar la conversacion.", "error");
+        }
+      }
+
       filtersEl.addEventListener("click", (e) => {
         const btn = e.target.closest(".filter-chip");
         if (!btn) return;
@@ -809,7 +888,7 @@
         clearInterval(pollTimer);
         pollTimer = setInterval(() => {
           loadConversations();
-          if (activeId) openConversation(activeId);
+          if (activeId) openConversation(activeId, { preserveScroll: true, silent: true });
         }, 8000);
       }
 

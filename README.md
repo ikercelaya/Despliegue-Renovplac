@@ -223,6 +223,7 @@ Edita estos archivos y redeploya. El bot los carga al arrancar y los inyecta en 
 | `/api/admin/conversations/:id/reply` | POST | Mensaje desde admin |
 | `/api/admin/conversations/:id/toggle-bot` | POST | `{ enabled: bool }` |
 | `/api/admin/conversations/:id/close` | POST | Cerrar |
+| `/api/admin/conversations/:id/delete` | POST | Eliminar conversación |
 | `/api/whatsapp/webhook` | GET | Verificación del webhook (handshake con `hub.verify_token`) |
 | `/api/whatsapp/webhook` | POST | Recepción de mensajes entrantes de WhatsApp |
 

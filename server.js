@@ -9,6 +9,7 @@ const { sendEmail } = require("./lib/email");
 const { buildSystemPrompt } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
 const { INVALID_PHONE_REPLY, getPhoneSubmissionStatus } = require("./lib/phone");
+const { buildLeadPatch, buildLeadPatchFromMessages } = require("./lib/lead");
 const wa = require("./lib/whatsapp");
 
 const app = express();
@@ -19,6 +20,7 @@ const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
 const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 24);
+const ACCEPT_BUDGET_REGEX = /^\s*(acepto|si\s+acepto|s[ií]\s+acepto|quiero\s+aceptar|aceptar)\b/i;
 
 app.use(express.json({
   limit: "8mb",
@@ -62,7 +64,10 @@ async function loadConversation(conversationId) {
     .select("id, role, content, image_url, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
-  return { ...conv, messages: msgs || [] };
+  const messages = msgs || [];
+  const enriched = { ...conv, messages };
+  await updateLeadData(enriched, buildLeadPatchFromMessages(enriched, messages));
+  return enriched;
 }
 
 async function loadByToken(token) {
@@ -115,6 +120,33 @@ function botRecentlyAskedForPhone(messages) {
   return /\b(tel[eé]fono|m[oó]vil|whats(?:app)?|n[uú]mero)\b/i.test(lastAssistant?.content || "");
 }
 
+async function updateLeadData(conv, patch) {
+  const cleanPatch = Object.fromEntries(
+    Object.entries(patch || {}).filter(([, value]) => value !== null && value !== undefined && value !== "")
+  );
+  if (!conv?.id || Object.keys(cleanPatch).length === 0) return conv;
+
+  const { error } = await supabase
+    .from("bot_conversations")
+    .update(cleanPatch)
+    .eq("id", conv.id);
+  if (error) {
+    console.warn(`[lead] No se pudieron actualizar datos del cliente (${conv.id}):`, error.message);
+    return conv;
+  }
+  Object.assign(conv, cleanPatch);
+  return conv;
+}
+
+function addBudgetAcceptanceHint(text, isWeb) {
+  const hint = isWeb
+    ? "Puedes aceptarlo con el botón \"Aceptar presupuesto\" o escribiendo ACEPTO en el chat."
+    : "Si te encaja, responde ACEPTO y Luis te llamará para coordinar la visita técnica.";
+  const current = String(text || "").trim();
+  if (/ACEPTO|Aceptar presupuesto/i.test(current)) return current;
+  return current ? `${current}\n\n${hint}` : hint;
+}
+
 async function fetchBudgets(conversationId) {
   const { data } = await supabase
     .from("bot_budgets")
@@ -122,6 +154,51 @@ async function fetchBudgets(conversationId) {
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
   return data || [];
+}
+
+async function fetchLatestPendingBudget(conversationId) {
+  const { data } = await supabase
+    .from("bot_budgets")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  return data?.[0] || null;
+}
+
+async function acceptPendingBudgetFromChat(conv) {
+  const pending = await fetchLatestPendingBudget(conv.id);
+  if (!pending) {
+    const reply =
+      "Ahora mismo no veo un presupuesto pendiente para aceptar. Si quieres, te ayudo a revisar el presupuesto o a preparar uno nuevo.";
+    const { data: assistantMsgRow } = await supabase
+      .from("bot_messages")
+      .insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: reply,
+      })
+      .select()
+      .single();
+    return { reply, assistantMsgRow, budget: null };
+  }
+
+  const budget = await acceptBudgetInternal(pending.id);
+  const firstName = String(conv.customer_name || "").trim().split(/\s+/)[0] || "";
+  const reply =
+    `${firstName ? `Perfecto, ${firstName}. ` : "Perfecto. "}Queda confirmado el presupuesto.\n\n` +
+    "Luis, de Renoveplac, se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
+  const { data: assistantMsgRow } = await supabase
+    .from("bot_messages")
+    .insert({
+      conversation_id: conv.id,
+      role: "assistant",
+      content: reply,
+    })
+    .select()
+    .single();
+  return { reply, assistantMsgRow, budget };
 }
 
 async function safeSendEmail(payload, label) {
@@ -297,17 +374,23 @@ app.post("/api/chat", async (req, res) => {
     let botReply = "";
     let createdBudget = null;
     let assistantMsgRow = null;
+
+    if (ACCEPT_BUDGET_REGEX.test(userMessage)) {
+      const accepted = await acceptPendingBudgetFromChat(conv);
+      return res.json({
+        reply: accepted.reply,
+        conversationId: conv.id,
+        accessToken: conv.access_token,
+        botEnabled: conv.bot_enabled !== false,
+        budget: accepted.budget,
+        userMessage: userMsgRow,
+        assistantMessage: accepted.assistantMsgRow,
+      });
+    }
+
     const phoneStatus = getPhoneSubmissionStatus(userMessage);
     const phoneAttempted =
       phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage));
-
-    if (phoneStatus.valid && !conv.customer_phone && conv.channel !== "whatsapp") {
-      await supabase
-        .from("bot_conversations")
-        .update({ customer_phone: phoneStatus.normalized })
-        .eq("id", conv.id);
-      conv.customer_phone = phoneStatus.normalized;
-    }
 
     if (conv.bot_enabled !== false && phoneAttempted && !phoneStatus.valid) {
       botReply = INVALID_PHONE_REPLY;
@@ -332,6 +415,8 @@ app.post("/api/chat", async (req, res) => {
         assistantMessage: assistantMsgRow,
       });
     }
+
+    await updateLeadData(conv, buildLeadPatch(conv, userMessage, conv.messages || []));
 
     if (conv.bot_enabled !== false) {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
@@ -401,6 +486,9 @@ app.post("/api/chat", async (req, res) => {
 
       botReply = result.text || "";
       createdBudget = result.budget;
+      if (createdBudget) {
+        botReply = addBudgetAcceptanceHint(botReply, true);
+      }
 
       if (botReply) {
         const { data } = await supabase
@@ -559,7 +647,7 @@ app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
   const { data, error } = await supabase
     .from("bot_conversations")
     .select(
-      "id, customer_name, customer_email, customer_phone, customer_postal_code, work_type, status, bot_enabled, created_at, updated_at, source"
+      "id, customer_name, customer_email, customer_phone, customer_postal_code, work_type, status, bot_enabled, created_at, updated_at, source, channel"
     )
     .order("updated_at", { ascending: false })
     .limit(200);
@@ -601,6 +689,29 @@ app.post("/api/admin/conversations/:id/close", requireAdmin, async (req, res) =>
     .from("bot_conversations")
     .update({ status: "closed" })
     .eq("id", req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true });
+});
+
+app.post("/api/admin/conversations/:id/delete", requireAdmin, async (req, res) => {
+  const conversationId = req.params.id;
+
+  const { error: messagesError } = await supabase
+    .from("bot_messages")
+    .delete()
+    .eq("conversation_id", conversationId);
+  if (messagesError) return res.status(500).json({ error: messagesError.message });
+
+  const { error: budgetsError } = await supabase
+    .from("bot_budgets")
+    .delete()
+    .eq("conversation_id", conversationId);
+  if (budgetsError) return res.status(500).json({ error: budgetsError.message });
+
+  const { error } = await supabase
+    .from("bot_conversations")
+    .delete()
+    .eq("id", conversationId);
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ ok: true });
 });
@@ -666,6 +777,7 @@ async function acceptBudgetInternal(budgetId) {
     subject: `Presupuesto aceptado — ${conv.customer_name || "lead"} — ${budget.amount_eur} EUR`,
     text: summary,
   }, "budget/accept");
+  return budget;
 }
 
 // Verificación del webhook
@@ -768,23 +880,16 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
     }
 
-    const acceptRegex = /^\s*(acepto|si\s+acepto|quiero\s+aceptar|aceptar)\b/i;
-    if (acceptRegex.test(userMessage)) {
-      const { data: pending } = await supabase
-        .from("bot_budgets")
-        .select("id")
-        .eq("conversation_id", conv.id)
-        .eq("status", "pending")
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (pending && pending.length > 0) {
+    if (ACCEPT_BUDGET_REGEX.test(userMessage)) {
+      const pending = await fetchLatestPendingBudget(conv.id);
+      if (pending) {
         await supabase.from("bot_messages").insert({
           conversation_id: conv.id,
           role: "user",
           content: userMessage,
           image_url: imageUrl,
         });
-        await acceptBudgetInternal(pending[0].id);
+        await acceptBudgetInternal(pending.id);
         const confirmText =
           "He registrado tu aceptación del presupuesto orientativo. Luis, de Renoveplac, se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
         await supabase.from("bot_messages").insert({
@@ -808,6 +913,8 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       content: userMessage || (imageUrl ? "(imagen)" : ""),
       image_url: imageUrl,
     });
+
+    await updateLeadData(conv, buildLeadPatch(conv, userMessage, conv.messages || []));
 
     if (conv.bot_enabled === false) return;
 
