@@ -482,6 +482,8 @@
       let allConversations = [];
       let activeFilter = "all";
       let searchQuery = "";
+      let renderedConversationId = null;
+      const replyDraftByConversation = {};
 
       function authHeaders() { return token ? { Authorization: "Bearer " + token } : {}; }
       function escapeHtml(s) {
@@ -519,12 +521,17 @@
         return "Widget chat";
       }
       function renderEmptyPane() {
+        renderedConversationId = null;
         mainPane.innerHTML =
           '<div class="empty">' +
             '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
             '<h3>Selecciona una conversacion</h3>' +
             '<p>Elige un chat de la izquierda para ver el historial y responder.</p>' +
           '</div>';
+      }
+      function isWritingReply() {
+        const ta = document.getElementById("replyText");
+        return !!(ta && document.activeElement === ta);
       }
       function toast(msg, type) {
         const el = document.createElement("div");
@@ -645,6 +652,15 @@
       }
 
       function renderConversation(conv, options = {}) {
+        const previousReply = document.getElementById("replyText");
+        const wasSameConversation = renderedConversationId === conv.id;
+        const replyWasFocused = wasSameConversation && previousReply && document.activeElement === previousReply;
+        const replySelectionStart = previousReply ? previousReply.selectionStart : null;
+        const replySelectionEnd = previousReply ? previousReply.selectionEnd : null;
+        if (previousReply && renderedConversationId) {
+          replyDraftByConversation[renderedConversationId] = previousReply.value;
+        }
+
         const name = conv.customer_name || "Cliente sin nombre";
         const status = conv.status || "active";
         const botEnabled = conv.bot_enabled !== false;
@@ -721,9 +737,10 @@
                   ' Enviar' +
                 '</button>' +
               '</form>' +
-              '<div class="reply-hint">Atajo: Ctrl/Cmd + Enter para enviar.</div>' +
+              '<div class="reply-hint">Enter para enviar. Shift + Enter para salto de línea.</div>' +
             '</div>';
 
+        renderedConversationId = conv.id;
         mainPane.innerHTML = headerHtml + leadHtml +
           '<div class="messages-pane" id="messagesPane">' + messagesHtml + '</div>' +
           replyHtml;
@@ -745,9 +762,24 @@
         if (replyForm) {
           replyForm.addEventListener("submit", onReply);
           const ta = document.getElementById("replyText");
-          ta.addEventListener("keydown", (ev) => {
-            if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { ev.preventDefault(); replyForm.requestSubmit(); }
+          ta.value = replyDraftByConversation[conv.id] || "";
+          ta.addEventListener("input", () => {
+            replyDraftByConversation[conv.id] = ta.value;
           });
+          ta.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
+              ev.preventDefault();
+              replyForm.requestSubmit();
+            }
+          });
+          if (replyWasFocused) {
+            requestAnimationFrame(() => {
+              ta.focus();
+              const start = Math.min(replySelectionStart ?? ta.value.length, ta.value.length);
+              const end = Math.min(replySelectionEnd ?? start, ta.value.length);
+              ta.setSelectionRange(start, end);
+            });
+          }
         }
       }
 
@@ -802,18 +834,20 @@
         const ta = document.getElementById("replyText");
         const sendBtn = document.querySelector(".send-btn");
         const text = ta.value.trim();
-        if (!text || !activeId) return;
+        const conversationId = activeId;
+        if (!text || !conversationId) return;
         sendBtn.disabled = true;
         try {
-          const r = await fetch("/api/admin/conversations/" + activeId + "/reply", {
+          const r = await fetch("/api/admin/conversations/" + conversationId + "/reply", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...authHeaders() },
             body: JSON.stringify({ content: text }),
           });
           if (!r.ok) throw new Error("Error enviando");
+          delete replyDraftByConversation[conversationId];
           ta.value = "";
           toast("Respuesta enviada al cliente.", "success");
-          await openConversation(activeId);
+          await openConversation(conversationId);
         } catch (err) {
           toast("No se pudo enviar la respuesta.", "error");
         } finally {
@@ -860,8 +894,10 @@
           if (!r.ok) throw new Error("delete failed");
           if (activeId === id) {
             activeId = null;
+            renderedConversationId = null;
             renderEmptyPane();
           }
+          delete replyDraftByConversation[id];
           toast("Conversacion eliminada.", "success");
           await loadConversations();
         } catch (_) {
@@ -888,7 +924,9 @@
         clearInterval(pollTimer);
         pollTimer = setInterval(() => {
           loadConversations();
-          if (activeId) openConversation(activeId, { preserveScroll: true, silent: true });
+          if (activeId && !isWritingReply()) {
+            openConversation(activeId, { preserveScroll: true, silent: true });
+          }
         }, 8000);
       }
 

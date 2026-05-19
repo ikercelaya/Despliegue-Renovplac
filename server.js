@@ -388,9 +388,11 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
     const phoneStatus = getPhoneSubmissionStatus(userMessage);
     const phoneAttempted =
-      phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage));
+      !leadPatch.customer_email &&
+      (phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage)));
 
     if (conv.bot_enabled !== false && phoneAttempted && !phoneStatus.valid) {
       botReply = INVALID_PHONE_REPLY;
@@ -416,7 +418,7 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    await updateLeadData(conv, buildLeadPatch(conv, userMessage, conv.messages || []));
+    await updateLeadData(conv, leadPatch);
 
     if (conv.bot_enabled !== false) {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
@@ -914,13 +916,15 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       image_url: imageUrl,
     });
 
-    await updateLeadData(conv, buildLeadPatch(conv, userMessage, conv.messages || []));
+    const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
+    await updateLeadData(conv, leadPatch);
 
     if (conv.bot_enabled === false) return;
 
     const phoneStatus = getPhoneSubmissionStatus(userMessage);
     const phoneAttempted =
-      phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage));
+      !leadPatch.customer_email &&
+      (phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage)));
     if (phoneAttempted && !phoneStatus.valid) {
       await supabase.from("bot_messages").insert({
         conversation_id: conv.id,
