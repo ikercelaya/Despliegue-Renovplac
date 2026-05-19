@@ -17,6 +17,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
+const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 24);
 
 app.use(express.json({
   limit: "8mb",
@@ -99,6 +100,12 @@ function toAnthropicMessages(messages) {
       }
       return { role, content: text };
     });
+}
+
+function recentMessages(messages, limit) {
+  if (!Array.isArray(messages)) return [];
+  const n = Math.max(1, Number(limit) || 24);
+  return messages.slice(-n);
 }
 
 async function fetchBudgets(conversationId) {
@@ -634,6 +641,7 @@ app.get("/api/whatsapp/webhook", (req, res) => {
 
 // Recepción de mensajes
 app.post("/api/whatsapp/webhook", async (req, res) => {
+  const webhookStartedAt = Date.now();
   // Salida rápida: si NO es un evento de mensajes reales, contestar 200 y salir
   // (evita que tests de Meta con account_alerts/etc dejen procesos colgados)
   const value = req.body?.entry?.[0]?.changes?.[0]?.value;
@@ -659,6 +667,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     const from = wamsg.from;
     const msgType = wamsg.type;
     const contactName = value.contacts?.[0]?.profile?.name || null;
+    const waMessageId = wamsg.id || "sin-id";
+    console.log(`[whatsapp] recibido ${msgType} ${waMessageId} de ${from}`);
+    wa.markAsRead(wamsg.id);
 
     let userMessage = "";
     let imageBuffer = null;
@@ -739,7 +750,12 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           role: "assistant",
           content: confirmText,
         });
-        await wa.sendText(from, confirmText);
+        const sendStartedAt = Date.now();
+        const sendResult = await wa.sendText(from, confirmText);
+        console.log(
+          `[whatsapp] confirmacion ${waMessageId} enviada en ${Date.now() - sendStartedAt}ms ` +
+            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+        );
         return;
       }
     }
@@ -757,8 +773,10 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     const systemPrompt = buildSystemPrompt(
       buildContext(fullConv) + "\nCANAL: WhatsApp. El cliente NO tiene botones; para aceptar un presupuesto debe responder 'ACEPTO'."
     );
-    const history = toAnthropicMessages(fullConv?.messages || []);
+    const history = toAnthropicMessages(recentMessages(fullConv?.messages || [], WHATSAPP_HISTORY_LIMIT));
+    console.log(`[whatsapp] ${waMessageId}: enviando ${history.length} mensajes de historial al modelo`);
 
+    const modelStartedAt = Date.now();
     const result = await runConversation({
       systemPrompt,
       messages: history,
@@ -805,6 +823,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         return { ok: true };
       },
     });
+    console.log(`[whatsapp] ${waMessageId}: modelo listo en ${Date.now() - modelStartedAt}ms`);
 
     let botReply = result.text || "";
     if (result.budget) {
@@ -827,7 +846,12 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         role: "assistant",
         content: botReply,
       });
-      await wa.sendText(from, botReply);
+      const sendStartedAt = Date.now();
+      const sendResult = await wa.sendText(from, botReply);
+      console.log(
+        `[whatsapp] ${waMessageId}: respuesta enviada en ${Date.now() - sendStartedAt}ms ` +
+          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+      );
     }
   } catch (err) {
     console.error("[whatsapp/webhook]", err);

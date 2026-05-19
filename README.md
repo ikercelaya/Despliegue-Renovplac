@@ -59,6 +59,7 @@ Rellena `.env`:
 ```env
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
+ANTHROPIC_MAX_TOKENS=650
 PORT=3000
 PUBLIC_URL=https://pruebas-chat-bot-renove-plac.vercel.app
 
@@ -81,6 +82,7 @@ WHATSAPP_TOKEN=EAAxxxxxxxxxxx_token_permanente_del_usuario_de_sistema
 WHATSAPP_PHONE_NUMBER_ID=identificador_del_numero_de_telefono
 WHATSAPP_BUSINESS_ACCOUNT_ID=identificador_de_la_cuenta_de_whatsapp_business
 WHATSAPP_API_VERSION=v21.0
+WHATSAPP_HISTORY_LIMIT=24
 ```
 
 `PUBLIC_URL` es la URL pública del bot (la usa para los enlaces del email y debe coincidir con el dominio que configures como Callback URL del webhook de WhatsApp).
@@ -267,6 +269,7 @@ El bot recibe y responde mensajes en el número de la empresa usando la **Cloud 
 ### Notas
 
 - **Ventana de 24 horas**: dentro de las 24 h posteriores al último mensaje del cliente, el bot puede contestar libremente. Pasado ese plazo solo puedes enviar **plantillas pre-aprobadas** (el código no lo hace por ahora; si lo necesitas, hay `wa.sendTemplate` ya implementado en `lib/whatsapp.js`).
+- **Velocidad de respuesta**: `ANTHROPIC_MAX_TOKENS` limita la longitud máxima de la respuesta del modelo y `WHATSAPP_HISTORY_LIMIT` limita cuántos mensajes recientes de WhatsApp se mandan como contexto. Valores más bajos suelen responder antes; un rango razonable es `500-650` tokens y `16-24` mensajes.
 - **Método de pago**: para mensajes de pago (templates fuera de la ventana de 24 h) Meta exige método de pago en el WABA. Para conversaciones iniciadas por el cliente y respondidas dentro de la ventana, el tier gratuito de Meta cubre las primeras 1000 conversaciones/mes.
 - Si quieres que el panel `/admin` también funcione para conversaciones de WhatsApp: ya lo hace, `bot_enabled` y respuestas del admin se aplican igual, pero las respuestas del admin desde el panel **no** se reenvían automáticamente a WhatsApp (quedan solo en la BD). Si en algún momento quieres reenviarlas también por WhatsApp, hay que añadirlo en `POST /api/admin/conversations/:id/reply`.
 
