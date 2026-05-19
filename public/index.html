@@ -419,7 +419,21 @@
         btn.textContent = "Aceptando...";
         try {
           const r = await fetch("/api/budget/" + id + "/accept", { method: "POST" });
-          if (!r.ok) throw new Error((await r.json()).error || "Error");
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            if (data.requiresCustomerData) {
+              if (data.assistantMessage) {
+                renderMessage(data.assistantMessage);
+              } else {
+                renderMessage({ role: "assistant", content: data.reply || data.error });
+              }
+              btn.disabled = false;
+              btn.textContent = "Aceptar presupuesto";
+              poll();
+              return;
+            }
+            throw new Error(data.error || "Error");
+          }
           const card = renderedBudgets.get(id);
           if (card) {
             card.querySelector(".actions").innerHTML = '<span class="accepted-tag">Aceptado</span>';
