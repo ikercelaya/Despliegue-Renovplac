@@ -44,7 +44,8 @@ Chatbot de Renoveplac (reformas integrales en Lliria, Valencia) con:
 
 1. Crea proyecto en [supabase.com](https://supabase.com).
 2. Abre el **SQL Editor** y ejecuta el contenido de [`sql/schema.sql`](sql/schema.sql).
-3. Copia las credenciales:
+3. Para activar la confirmación de presupuestos por email, ejecuta también [`sql/email-confirmation.sql`](sql/email-confirmation.sql).
+4. Copia las credenciales:
    - `Project URL` → `SUPABASE_URL`
    - `service_role` key (Settings → API) → `SUPABASE_SERVICE_KEY`. **No** uses la `anon` key, el bot necesita escribir en las tablas.
 
@@ -216,6 +217,7 @@ Edita estos archivos y redeploya. El bot los carga al arrancar y los inyecta en 
 | `/api/upload` | POST | Subida de imagen del chat a Supabase Storage (`{ data, mimeType, conversationId?, token? }`) |
 | `/api/conversation` | GET | `?token=` o `?id=` |
 | `/api/messages` | GET | Polling con `?since=ISO_DATE` |
+| `/api/budget/:id/confirm` | GET | Confirmar email antes de mostrar presupuesto |
 | `/api/budget/:id/accept` | POST | Aceptar presupuesto |
 | `/api/admin/login` | POST | `{ password }` |
 | `/api/admin/conversations` | GET | Lista |

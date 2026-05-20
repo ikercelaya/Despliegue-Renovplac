@@ -275,6 +275,7 @@
 
       const params = new URLSearchParams(window.location.search);
       const urlToken = params.get("t");
+      const emailConfirmed = params.get("email_confirmed") === "1";
       const STORAGE_KEY = "renovebot.conversationId";
 
       let conversationId = urlToken ? null : localStorage.getItem(STORAGE_KEY);
@@ -419,7 +420,16 @@
         btn.textContent = "Aceptando...";
         try {
           const r = await fetch("/api/budget/" + id + "/accept", { method: "POST" });
-          if (!r.ok) throw new Error((await r.json()).error || "Error");
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            if (data.requiresEmailConfirmation) {
+              renderMessage({ role: "assistant", content: data.error });
+              btn.disabled = false;
+              btn.textContent = "Aceptar presupuesto";
+              return;
+            }
+            throw new Error(data.error || "Error");
+          }
           const card = renderedBudgets.get(id);
           if (card) {
             card.querySelector(".actions").innerHTML = '<span class="accepted-tag">Aceptado</span>';
@@ -460,6 +470,13 @@
           if (!urlToken) localStorage.setItem(STORAGE_KEY, conversationId);
           (data.messages || []).forEach(renderMessage);
           (data.budgets || []).forEach(renderBudget);
+          if (emailConfirmed) {
+            renderMessage({
+              role: "assistant",
+              content: "Email confirmado. Ya puedes ver tu presupuesto orientativo en el chat.",
+            });
+            window.history.replaceState({}, document.title, location.pathname + (urlToken ? "?t=" + encodeURIComponent(urlToken) : ""));
+          }
           if (data.botEnabled === false) {
             chatStatus.textContent = "Te atiende el equipo de Renoveplac";
           }

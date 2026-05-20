@@ -42,6 +42,19 @@ function generateToken() {
   return crypto.randomBytes(24).toString("hex");
 }
 
+function generateConfirmationToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function hashConfirmationToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  return email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+}
+
 function requireAdmin(req, res, next) {
   const auth = req.headers.authorization || "";
   const token = auth.replace(/^Bearer\s+/i, "");
@@ -147,13 +160,175 @@ function addBudgetAcceptanceHint(text, isWeb) {
   return current ? `${current}\n\n${hint}` : hint;
 }
 
-async function fetchBudgets(conversationId) {
+async function fetchBudgetConfirmations(budgetIds) {
+  if (!budgetIds.length) return new Map();
+  const { data, error } = await supabase
+    .from("bot_budget_email_confirmations")
+    .select("budget_id, email, sent_at, confirmed_at")
+    .in("budget_id", budgetIds);
+  if (error) {
+    console.warn("[budget-confirmation] No se pudieron cargar confirmaciones:", error.message);
+    return new Map();
+  }
+  return new Map((data || []).map((row) => [row.budget_id, row]));
+}
+
+async function fetchBudgetConfirmation(budgetId) {
+  const { data, error } = await supabase
+    .from("bot_budget_email_confirmations")
+    .select("budget_id, conversation_id, email, token_hash, sent_at, confirmed_at")
+    .eq("budget_id", budgetId)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[budget-confirmation] No se pudo cargar ${budgetId}:`, error.message);
+    return null;
+  }
+  return data || null;
+}
+
+async function attachBudgetConfirmations(budgets) {
+  const confirmations = await fetchBudgetConfirmations((budgets || []).map((b) => b.id));
+  return (budgets || []).map((budget) => {
+    const confirmation = confirmations.get(budget.id);
+    if (!confirmation) return budget;
+    return {
+      ...budget,
+      email_confirmation_required: true,
+      email_confirmation_email: confirmation.email,
+      email_confirmation_sent_at: confirmation.sent_at,
+      email_confirmed_at: confirmation.confirmed_at,
+    };
+  });
+}
+
+async function fetchBudgets(conversationId, options = {}) {
+  const includeUnconfirmed = !!options.includeUnconfirmed;
   const { data } = await supabase
     .from("bot_budgets")
     .select("id, title, description, amount_eur, iva_included, status, created_at, accepted_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
-  return data || [];
+  const budgets = await attachBudgetConfirmations(data || []);
+  if (includeUnconfirmed) return budgets;
+  return budgets.filter((budget) => !budget.email_confirmation_required || budget.email_confirmed_at);
+}
+
+async function fetchLeadStatsByEmail(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const { data, error } = await supabase
+    .from("bot_leads")
+    .select("email, budget_request_count, email_confirmed_budget_count, created_at, updated_at")
+    .eq("email", normalized)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[lead] No se pudieron cargar estadisticas de ${normalized}:`, error.message);
+    return null;
+  }
+  return data || null;
+}
+
+async function recordLeadBudgetRequest(email, conversationId) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) throw new Error("Falta un email valido para confirmar el presupuesto.");
+
+  const now = new Date().toISOString();
+  const { data: existing, error: selectError } = await supabase
+    .from("bot_leads")
+    .select("email, budget_request_count, email_confirmed_budget_count")
+    .eq("email", normalized)
+    .maybeSingle();
+  if (selectError) throw selectError;
+
+  if (existing) {
+    const nextCount = Number(existing.budget_request_count || 0) + 1;
+    const { data, error } = await supabase
+      .from("bot_leads")
+      .update({
+        budget_request_count: nextCount,
+        last_conversation_id: conversationId,
+        updated_at: now,
+      })
+      .eq("email", normalized)
+      .select("email, budget_request_count, email_confirmed_budget_count")
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from("bot_leads")
+    .insert({
+      email: normalized,
+      first_conversation_id: conversationId,
+      last_conversation_id: conversationId,
+      budget_request_count: 1,
+      email_confirmed_budget_count: 0,
+    })
+    .select("email, budget_request_count, email_confirmed_budget_count")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function registerBudgetEmailConfirmation(budget, conv) {
+  const email = normalizeEmail(conv.customer_email);
+  if (!email) throw new Error("Falta email del cliente. Pidelo antes de crear el presupuesto.");
+
+  const lead = await recordLeadBudgetRequest(email, conv.id);
+  const rawToken = generateConfirmationToken();
+  const tokenHash = hashConfirmationToken(rawToken);
+  const confirmUrl = `${PUBLIC_URL}/api/budget/${budget.id}/confirm?token=${rawToken}`;
+
+  const { error } = await supabase
+    .from("bot_budget_email_confirmations")
+    .insert({
+      budget_id: budget.id,
+      conversation_id: conv.id,
+      email,
+      token_hash: tokenHash,
+    });
+  if (error) throw error;
+
+  const requestCount = Number(lead?.budget_request_count || 1);
+  const text = [
+    `Hola${conv.customer_name ? ` ${conv.customer_name}` : ""},`,
+    "",
+    "Has solicitado un presupuesto orientativo en Renoveplac.",
+    "Para verlo en el chat, confirma primero que este correo es tuyo pulsando este enlace:",
+    "",
+    confirmUrl,
+    "",
+    `Solicitudes registradas con este email: ${requestCount}.`,
+    "",
+    "Si no has sido tu, puedes ignorar este mensaje.",
+  ].join("\n");
+
+  await safeSendEmail({
+    to: email,
+    replyTo: COMPANY_EMAIL,
+    subject: "Confirma tu email para ver el presupuesto de Renoveplac",
+    text,
+  }, "budget/email-confirmation");
+
+  return { email, confirmUrl, requestCount };
+}
+
+function buildBudgetConfirmationMessage(confirmation) {
+  const email = confirmation?.email || "tu email";
+  const countLine = confirmation?.requestCount
+    ? `\n\nSolicitudes registradas con este email: ${confirmation.requestCount}.`
+    : "";
+  return (
+    `Te he preparado el presupuesto orientativo. Para mostrártelo, te he enviado un enlace de confirmación a ${email}.` +
+    "\n\nAbre ese enlace desde tu correo y el presupuesto aparecerá en este chat." +
+    countLine
+  );
+}
+
+function buildEmailConfirmationRequiredMessage(confirmation) {
+  const email = confirmation?.email || "tu email";
+  return `Antes de aceptar o ver el presupuesto, confirma el enlace que te he enviado a ${email}.`;
 }
 
 async function fetchLatestPendingBudget(conversationId) {
@@ -172,6 +347,21 @@ async function acceptPendingBudgetFromChat(conv) {
   if (!pending) {
     const reply =
       "Ahora mismo no veo un presupuesto pendiente para aceptar. Si quieres, te ayudo a revisar el presupuesto o a preparar uno nuevo.";
+    const { data: assistantMsgRow } = await supabase
+      .from("bot_messages")
+      .insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: reply,
+      })
+      .select()
+      .single();
+    return { reply, assistantMsgRow, budget: null };
+  }
+
+  const confirmation = await fetchBudgetConfirmation(pending.id);
+  if (confirmation && !confirmation.confirmed_at) {
+    const reply = buildEmailConfirmationRequiredMessage(confirmation);
     const { data: assistantMsgRow } = await supabase
       .from("bot_messages")
       .insert({
@@ -431,6 +621,9 @@ app.post("/api/chat", async (req, res) => {
         systemPrompt,
         messages: history,
         onBudget: async (input) => {
+          if (!normalizeEmail(conv.customer_email)) {
+            throw new Error("Falta email del cliente. Pide un email válido antes de generar el presupuesto.");
+          }
           const { data: budget, error } = await supabase
             .from("bot_budgets")
             .insert({
@@ -447,6 +640,8 @@ app.post("/api/chat", async (req, res) => {
             .from("bot_conversations")
             .update({ status: "budget_sent" })
             .eq("id", conv.id);
+          const confirmation = await registerBudgetEmailConfirmation(budget, conv);
+          budget.email_confirmation = confirmation;
           return budget;
         },
         onNotifyHuman: async (input) => {
@@ -489,7 +684,11 @@ app.post("/api/chat", async (req, res) => {
       botReply = result.text || "";
       createdBudget = result.budget;
       if (createdBudget) {
-        botReply = addBudgetAcceptanceHint(botReply, true);
+        if (createdBudget.email_confirmation) {
+          botReply = buildBudgetConfirmationMessage(createdBudget.email_confirmation);
+        } else {
+          botReply = addBudgetAcceptanceHint(botReply, true);
+        }
       }
 
       if (botReply) {
@@ -511,7 +710,8 @@ app.post("/api/chat", async (req, res) => {
       conversationId: conv.id,
       accessToken: conv.access_token,
       botEnabled: conv.bot_enabled !== false,
-      budget: createdBudget,
+      budget: createdBudget?.email_confirmation ? null : createdBudget,
+      pendingBudgetEmailConfirmation: createdBudget?.email_confirmation || null,
       userMessage: userMsgRow,
       assistantMessage: assistantMsgRow,
     });
@@ -570,6 +770,48 @@ app.get("/api/messages", async (req, res) => {
   }
 });
 
+app.get("/api/budget/:id/confirm", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rawToken = String(req.query.token || "");
+    if (!rawToken) return res.status(400).send("Falta token de confirmación.");
+
+    const confirmation = await fetchBudgetConfirmation(id);
+    if (!confirmation) return res.status(404).send("Confirmación no encontrada.");
+    if (confirmation.token_hash !== hashConfirmationToken(rawToken)) {
+      return res.status(403).send("Enlace de confirmación no válido.");
+    }
+
+    if (!confirmation.confirmed_at) {
+      const now = new Date().toISOString();
+      const { error: updateError } = await supabase
+        .from("bot_budget_email_confirmations")
+        .update({ confirmed_at: now })
+        .eq("budget_id", id);
+      if (updateError) throw updateError;
+
+      const lead = await fetchLeadStatsByEmail(confirmation.email);
+      if (lead) {
+        await supabase
+          .from("bot_leads")
+          .update({
+            email_confirmed_budget_count: Number(lead.email_confirmed_budget_count || 0) + 1,
+            updated_at: now,
+          })
+          .eq("email", confirmation.email);
+      }
+    }
+
+    const conv = await loadConversation(confirmation.conversation_id);
+    if (!conv?.access_token) return res.status(404).send("Conversación no encontrada.");
+    const redirectUrl = `${PUBLIC_URL}/?t=${encodeURIComponent(conv.access_token)}&email_confirmed=1`;
+    return res.redirect(303, redirectUrl);
+  } catch (err) {
+    console.error("[budget/confirm]", err);
+    return res.status(500).send("No se pudo confirmar el presupuesto.");
+  }
+});
+
 // ---------- Aceptar presupuesto ----------
 
 app.post("/api/budget/:id/accept", async (req, res) => {
@@ -583,6 +825,15 @@ app.post("/api/budget/:id/accept", async (req, res) => {
     if (error || !budget) return res.status(404).json({ error: "Presupuesto no encontrado." });
     if (budget.status !== "pending") {
       return res.status(400).json({ error: "Presupuesto ya gestionado." });
+    }
+
+    const confirmation = await fetchBudgetConfirmation(id);
+    if (confirmation && !confirmation.confirmed_at) {
+      return res.status(403).json({
+        error: buildEmailConfirmationRequiredMessage(confirmation),
+        requiresEmailConfirmation: true,
+        email: confirmation.email,
+      });
     }
 
     await supabase
@@ -660,8 +911,9 @@ app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
 app.get("/api/admin/conversations/:id", requireAdmin, async (req, res) => {
   const conv = await loadConversation(req.params.id);
   if (!conv) return res.status(404).json({ error: "Conversación no encontrada." });
-  const budgets = await fetchBudgets(conv.id);
-  return res.json({ ...conv, budgets });
+  const budgets = await fetchBudgets(conv.id, { includeUnconfirmed: true });
+  const leadStats = await fetchLeadStatsByEmail(conv.customer_email);
+  return res.json({ ...conv, budgets, lead_stats: leadStats });
 });
 
 app.post("/api/admin/conversations/:id/reply", requireAdmin, async (req, res) => {
@@ -703,6 +955,14 @@ app.post("/api/admin/conversations/:id/delete", requireAdmin, async (req, res) =
     .delete()
     .eq("conversation_id", conversationId);
   if (messagesError) return res.status(500).json({ error: messagesError.message });
+
+  const { error: confirmationsError } = await supabase
+    .from("bot_budget_email_confirmations")
+    .delete()
+    .eq("conversation_id", conversationId);
+  if (confirmationsError && confirmationsError.code !== "42P01") {
+    return res.status(500).json({ error: confirmationsError.message });
+  }
 
   const { error: budgetsError } = await supabase
     .from("bot_budgets")
@@ -891,6 +1151,22 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           content: userMessage,
           image_url: imageUrl,
         });
+        const confirmation = await fetchBudgetConfirmation(pending.id);
+        if (confirmation && !confirmation.confirmed_at) {
+          const confirmText = buildEmailConfirmationRequiredMessage(confirmation);
+          await supabase.from("bot_messages").insert({
+            conversation_id: conv.id,
+            role: "assistant",
+            content: confirmText,
+          });
+          const sendStartedAt = Date.now();
+          const sendResult = await wa.sendText(from, confirmText);
+          console.log(
+            `[whatsapp] confirmacion email pendiente ${waMessageId} respondida en ${Date.now() - sendStartedAt}ms ` +
+              `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+          );
+          return;
+        }
         await acceptBudgetInternal(pending.id);
         const confirmText =
           "He registrado tu aceptación del presupuesto orientativo. Luis, de Renoveplac, se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
@@ -952,6 +1228,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       systemPrompt,
       messages: history,
       onBudget: async (input) => {
+        if (!normalizeEmail(conv.customer_email)) {
+          throw new Error("Falta email del cliente. Pide un email válido antes de generar el presupuesto.");
+        }
         const { data: budget, error } = await supabase
           .from("bot_budgets")
           .insert({
@@ -968,6 +1247,8 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           .from("bot_conversations")
           .update({ status: "budget_sent" })
           .eq("id", conv.id);
+        const confirmation = await registerBudgetEmailConfirmation(budget, conv);
+        budget.email_confirmation = confirmation;
         return budget;
       },
       onNotifyHuman: async (input) => {
@@ -998,17 +1279,21 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
 
     let botReply = result.text || "";
     if (result.budget) {
-      const b = result.budget;
-      const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
-      const card =
-        "\n\n━━━━━━━━━━━━━━━━━━\n" +
-        `📋 *PRESUPUESTO ORIENTATIVO*\n` +
-        `*${b.title}*\n` +
-        `Importe: *${Number(b.amount_eur).toLocaleString("es-ES")} €* ${ivaTxt}\n\n` +
-        `${b.description}\n` +
-        "━━━━━━━━━━━━━━━━━━\n\n" +
-        `Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.`;
-      botReply = (botReply ? botReply + "\n" : "") + card;
+      if (result.budget.email_confirmation) {
+        botReply = buildBudgetConfirmationMessage(result.budget.email_confirmation);
+      } else {
+        const b = result.budget;
+        const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
+        const card =
+          "\n\n━━━━━━━━━━━━━━━━━━\n" +
+          `📋 *PRESUPUESTO ORIENTATIVO*\n` +
+          `*${b.title}*\n` +
+          `Importe: *${Number(b.amount_eur).toLocaleString("es-ES")} €* ${ivaTxt}\n\n` +
+          `${b.description}\n` +
+          "━━━━━━━━━━━━━━━━━━\n\n" +
+          `Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.`;
+        botReply = (botReply ? botReply + "\n" : "") + card;
+      }
     }
 
     if (botReply) {

@@ -701,6 +701,7 @@
           { label: "Email", value: conv.customer_email },
           { label: "Teléfono", value: conv.customer_phone },
           { label: "Código postal", value: conv.customer_postal_code },
+          { label: "Solicitudes email", value: conv.lead_stats ? String(conv.lead_stats.budget_request_count || 0) : "" },
           { label: "Origen", value: sourceLabel(conv) },
           { label: "Creada", value: fmtDateTime(conv.created_at) },
         ];
@@ -807,13 +808,16 @@
       function renderBudgetItem(b) {
         const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
         const status = b.status || "pending";
-        const tagText = status === "accepted" ? "Aceptado" : status === "rejected" ? "Rechazado" : "Pendiente";
+        const waitingEmail = b.email_confirmation_required && !b.email_confirmed_at;
+        const tagText = waitingEmail ? "Pendiente email" : status === "accepted" ? "Aceptado" : status === "rejected" ? "Rechazado" : "Pendiente";
         const tagIcon = status === "accepted"
           ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>'
           : status === "rejected"
           ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
           : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
-        const acceptedTime = status === "accepted" && b.accepted_at
+        const acceptedTime = waitingEmail
+          ? '<span class="b-time">Email enviado a ' + escapeHtml(b.email_confirmation_email || "") + '</span>'
+          : status === "accepted" && b.accepted_at
           ? '<span class="b-time">Aceptado el ' + escapeHtml(fmtDateTime(b.accepted_at)) + '</span>'
           : '<span class="b-time">Creado el ' + escapeHtml(fmtDateTime(b.created_at)) + '</span>';
         return (
