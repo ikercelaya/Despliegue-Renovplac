@@ -304,14 +304,37 @@ async function registerBudgetEmailConfirmation(budget, conv) {
     "Si no has sido tu, puedes ignorar este mensaje.",
   ].join("\n");
 
-  await safeSendEmail({
+  const sendResult = await safeSendEmail({
     to: email,
     replyTo: COMPANY_EMAIL,
     subject: "Confirma tu email para ver el presupuesto de Renoveplac",
     text,
   }, "budget/email-confirmation");
+  if (sendResult?.error || sendResult?.mocked) {
+    await supabase
+      .from("bot_budget_email_confirmations")
+      .delete()
+      .eq("budget_id", budget.id);
+    throw new Error(`No se pudo enviar el email de confirmación: ${sendResult.error || "SMTP no configurado"}`);
+  }
 
   return { email, confirmUrl, requestCount };
+}
+
+async function rollbackBudgetCreation(budget, conv) {
+  if (!budget?.id) return;
+  await supabase
+    .from("bot_budget_email_confirmations")
+    .delete()
+    .eq("budget_id", budget.id);
+  await supabase
+    .from("bot_budgets")
+    .delete()
+    .eq("id", budget.id);
+  await supabase
+    .from("bot_conversations")
+    .update({ status: "active" })
+    .eq("id", conv.id);
 }
 
 function buildBudgetConfirmationMessage(confirmation) {
@@ -393,7 +416,13 @@ async function acceptPendingBudgetFromChat(conv) {
 
 async function safeSendEmail(payload, label) {
   try {
-    return await sendEmail(payload);
+    const result = await sendEmail(payload);
+    if (result?.id) {
+      console.log(`[email] enviado (${label || "sin etiqueta"}) a ${payload.to}: ${result.id}`);
+    } else if (result?.mocked) {
+      console.log(`[email] simulado (${label || "sin etiqueta"}) a ${payload.to}`);
+    }
+    return result;
   } catch (err) {
     console.warn(`[email] envío fallido (${label || "sin etiqueta"}):`, err.message);
     return { error: err.message };
@@ -640,9 +669,14 @@ app.post("/api/chat", async (req, res) => {
             .from("bot_conversations")
             .update({ status: "budget_sent" })
             .eq("id", conv.id);
-          const confirmation = await registerBudgetEmailConfirmation(budget, conv);
-          budget.email_confirmation = confirmation;
-          return budget;
+          try {
+            const confirmation = await registerBudgetEmailConfirmation(budget, conv);
+            budget.email_confirmation = confirmation;
+            return budget;
+          } catch (err) {
+            await rollbackBudgetCreation(budget, conv);
+            throw err;
+          }
         },
         onNotifyHuman: async (input) => {
           const reasonLabel = ({
@@ -1247,9 +1281,14 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           .from("bot_conversations")
           .update({ status: "budget_sent" })
           .eq("id", conv.id);
-        const confirmation = await registerBudgetEmailConfirmation(budget, conv);
-        budget.email_confirmation = confirmation;
-        return budget;
+        try {
+          const confirmation = await registerBudgetEmailConfirmation(budget, conv);
+          budget.email_confirmation = confirmation;
+          return budget;
+        } catch (err) {
+          await rollbackBudgetCreation(budget, conv);
+          throw err;
+        }
       },
       onNotifyHuman: async (input) => {
         const reasonLabel = ({

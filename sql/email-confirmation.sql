@@ -28,3 +28,13 @@ create index if not exists bot_budget_email_confirmations_email_idx
 
 create index if not exists bot_budget_email_confirmations_confirmed_at_idx
   on bot_budget_email_confirmations (confirmed_at);
+
+-- Fuerza a la API REST de Supabase/PostgREST a recargar el schema cache.
+-- Si no se hace, Vercel puede ver "Could not find the table ... in the schema cache"
+-- durante unos minutos aunque la tabla exista en el Table Editor.
+notify pgrst, 'reload schema';
+
+-- Comprobacion visual: debe devolver los nombres de las dos tablas, no null.
+select
+  to_regclass('public.bot_leads') as bot_leads_table,
+  to_regclass('public.bot_budget_email_confirmations') as bot_budget_email_confirmations_table;
