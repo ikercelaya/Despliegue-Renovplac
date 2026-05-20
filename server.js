@@ -120,41 +120,6 @@ function botRecentlyAskedForPhone(messages) {
   return /\b(tel[eé]fono|m[oó]vil|whats(?:app)?|n[uú]mero)\b/i.test(lastAssistant?.content || "");
 }
 
-function getMissingAcceptanceFields(conv) {
-  const fields = [
-    { key: "customer_name", label: "nombre" },
-    { key: "customer_phone", label: "teléfono" },
-    { key: "customer_email", label: "email" },
-  ];
-  return fields.filter((field) => !String(conv?.[field.key] || "").trim());
-}
-
-function formatFieldList(fields) {
-  const labels = fields.map((field) => field.label);
-  if (labels.length <= 1) return labels[0] || "";
-  if (labels.length === 2) return `${labels[0]} y ${labels[1]}`;
-  return `${labels.slice(0, -1).join(", ")} y ${labels[labels.length - 1]}`;
-}
-
-function buildCustomerDataRequest(conv, isWeb = true) {
-  const missing = getMissingAcceptanceFields(conv);
-  const fieldList = formatFieldList(missing);
-  if (!missing.length) return null;
-  const acceptAction = isWeb
-    ? "podrás escribir ACEPTO o pulsar de nuevo el botón de aceptar presupuesto"
-    : "podrás responder ACEPTO";
-  return (
-    `Antes de aceptar el presupuesto necesito dejar bien identificados tus datos: ${fieldList}.\n\n` +
-    `Pásamelos por aquí y, cuando estén completos, ${acceptAction}.`
-  );
-}
-
-function buildCustomerDataReadyMessage(isWeb = true) {
-  return isWeb
-    ? "Perfecto, ya tengo tus datos de contacto. Si te encaja el presupuesto, puedes escribir ACEPTO o pulsar el botón de aceptar presupuesto."
-    : "Perfecto, ya tengo tus datos de contacto. Si te encaja el presupuesto, responde ACEPTO.";
-}
-
 async function updateLeadData(conv, patch) {
   const cleanPatch = Object.fromEntries(
     Object.entries(patch || {}).filter(([, value]) => value !== null && value !== undefined && value !== "")
@@ -173,13 +138,12 @@ async function updateLeadData(conv, patch) {
   return conv;
 }
 
-function addBudgetAcceptanceHint(text, isWeb, conv) {
-  const customerDataRequest = buildCustomerDataRequest(conv, isWeb);
-  const hint = customerDataRequest || (isWeb
+function addBudgetAcceptanceHint(text, isWeb) {
+  const hint = isWeb
     ? "Puedes aceptarlo con el botón \"Aceptar presupuesto\" o escribiendo ACEPTO en el chat."
-    : "Si te encaja, responde ACEPTO y Luis te llamará para coordinar la visita técnica.");
+    : "Si te encaja, responde ACEPTO y Luis te llamará para coordinar la visita técnica.";
   const current = String(text || "").trim();
-  if (!customerDataRequest && /ACEPTO|Aceptar presupuesto/i.test(current)) return current;
+  if (/ACEPTO|Aceptar presupuesto/i.test(current)) return current;
   return current ? `${current}\n\n${hint}` : hint;
 }
 
@@ -218,26 +182,6 @@ async function acceptPendingBudgetFromChat(conv) {
       .select()
       .single();
     return { reply, assistantMsgRow, budget: null };
-  }
-
-  const customerDataRequest = buildCustomerDataRequest(conv);
-  if (customerDataRequest) {
-    const { data: assistantMsgRow } = await supabase
-      .from("bot_messages")
-      .insert({
-        conversation_id: conv.id,
-        role: "assistant",
-        content: customerDataRequest,
-      })
-      .select()
-      .single();
-    return {
-      reply: customerDataRequest,
-      assistantMsgRow,
-      budget: null,
-      requiresCustomerData: true,
-      missingFields: getMissingAcceptanceFields(conv).map((field) => field.key),
-    };
   }
 
   const budget = await acceptBudgetInternal(pending.id);
@@ -430,9 +374,6 @@ app.post("/api/chat", async (req, res) => {
     let botReply = "";
     let createdBudget = null;
     let assistantMsgRow = null;
-    const missingAcceptanceBefore = getMissingAcceptanceFields(conv);
-    const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
-    await updateLeadData(conv, leadPatch);
 
     if (ACCEPT_BUDGET_REGEX.test(userMessage)) {
       const accepted = await acceptPendingBudgetFromChat(conv);
@@ -442,13 +383,12 @@ app.post("/api/chat", async (req, res) => {
         accessToken: conv.access_token,
         botEnabled: conv.bot_enabled !== false,
         budget: accepted.budget,
-        requiresCustomerData: !!accepted.requiresCustomerData,
-        missingFields: accepted.missingFields || [],
         userMessage: userMsgRow,
         assistantMessage: accepted.assistantMsgRow,
       });
     }
 
+    const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
     const phoneStatus = getPhoneSubmissionStatus(userMessage);
     const phoneAttempted =
       !leadPatch.customer_email &&
@@ -478,32 +418,9 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    if (conv.bot_enabled !== false) {
-      if (missingAcceptanceBefore.length && getMissingAcceptanceFields(conv).length === 0) {
-        const pending = await fetchLatestPendingBudget(conv.id);
-        if (pending) {
-          botReply = buildCustomerDataReadyMessage(true);
-          const { data } = await supabase
-            .from("bot_messages")
-            .insert({
-              conversation_id: conv.id,
-              role: "assistant",
-              content: botReply,
-            })
-            .select()
-            .single();
-          return res.json({
-            reply: botReply,
-            conversationId: conv.id,
-            accessToken: conv.access_token,
-            botEnabled: true,
-            budget: null,
-            userMessage: userMsgRow,
-            assistantMessage: data,
-          });
-        }
-      }
+    await updateLeadData(conv, leadPatch);
 
+    if (conv.bot_enabled !== false) {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
       const history = toAnthropicMessages([
         ...(conv.messages || []),
@@ -572,7 +489,7 @@ app.post("/api/chat", async (req, res) => {
       botReply = result.text || "";
       createdBudget = result.budget;
       if (createdBudget) {
-        botReply = addBudgetAcceptanceHint(botReply, true, conv);
+        botReply = addBudgetAcceptanceHint(botReply, true);
       }
 
       if (botReply) {
@@ -668,27 +585,6 @@ app.post("/api/budget/:id/accept", async (req, res) => {
       return res.status(400).json({ error: "Presupuesto ya gestionado." });
     }
 
-    const conv = (await loadConversation(budget.conversation_id)) || budget.bot_conversations;
-    const customerDataRequest = buildCustomerDataRequest(conv);
-    if (customerDataRequest) {
-      const { data: assistantMsgRow } = await supabase
-        .from("bot_messages")
-        .insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: customerDataRequest,
-        })
-        .select()
-        .single();
-      return res.status(409).json({
-        error: customerDataRequest,
-        reply: customerDataRequest,
-        requiresCustomerData: true,
-        missingFields: getMissingAcceptanceFields(conv).map((field) => field.key),
-        assistantMessage: assistantMsgRow,
-      });
-    }
-
     await supabase
       .from("bot_budgets")
       .update({ status: "accepted", accepted_at: new Date().toISOString() })
@@ -699,6 +595,7 @@ app.post("/api/budget/:id/accept", async (req, res) => {
       .update({ status: "budget_accepted" })
       .eq("id", budget.conversation_id);
 
+    const conv = budget.bot_conversations;
     const ivaLine = budget.iva_included ? "(IVA incluido)" : "+ IVA aparte";
     const summary = [
       "Presupuesto aceptado por el cliente.",
@@ -985,10 +882,6 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
     }
 
-    const missingAcceptanceBefore = getMissingAcceptanceFields(conv);
-    const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
-    await updateLeadData(conv, leadPatch);
-
     if (ACCEPT_BUDGET_REGEX.test(userMessage)) {
       const pending = await fetchLatestPendingBudget(conv.id);
       if (pending) {
@@ -998,21 +891,6 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           content: userMessage,
           image_url: imageUrl,
         });
-        const customerDataRequest = buildCustomerDataRequest(conv, false);
-        if (customerDataRequest) {
-          await supabase.from("bot_messages").insert({
-            conversation_id: conv.id,
-            role: "assistant",
-            content: customerDataRequest,
-          });
-          const sendStartedAt = Date.now();
-          const sendResult = await wa.sendText(from, customerDataRequest);
-          console.log(
-            `[whatsapp] datos cliente ${waMessageId} solicitados en ${Date.now() - sendStartedAt}ms ` +
-              `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-          );
-          return;
-        }
         await acceptBudgetInternal(pending.id);
         const confirmText =
           "He registrado tu aceptación del presupuesto orientativo. Luis, de Renoveplac, se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
@@ -1038,6 +916,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       image_url: imageUrl,
     });
 
+    const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
+    await updateLeadData(conv, leadPatch);
+
     if (conv.bot_enabled === false) return;
 
     const phoneStatus = getPhoneSubmissionStatus(userMessage);
@@ -1057,25 +938,6 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
       );
       return;
-    }
-
-    if (missingAcceptanceBefore.length && getMissingAcceptanceFields(conv).length === 0) {
-      const pending = await fetchLatestPendingBudget(conv.id);
-      if (pending) {
-        const readyText = buildCustomerDataReadyMessage(false);
-        await supabase.from("bot_messages").insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: readyText,
-        });
-        const sendStartedAt = Date.now();
-        const sendResult = await wa.sendText(from, readyText);
-        console.log(
-          `[whatsapp] datos cliente ${waMessageId} completados en ${Date.now() - sendStartedAt}ms ` +
-            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-        );
-        return;
-      }
     }
 
     const fullConv = await loadConversation(conv.id);
@@ -1138,9 +1000,6 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     if (result.budget) {
       const b = result.budget;
       const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
-      const acceptanceLine =
-        buildCustomerDataRequest(conv, false) ||
-        "Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.";
       const card =
         "\n\n━━━━━━━━━━━━━━━━━━\n" +
         `📋 *PRESUPUESTO ORIENTATIVO*\n` +
@@ -1148,7 +1007,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         `Importe: *${Number(b.amount_eur).toLocaleString("es-ES")} €* ${ivaTxt}\n\n` +
         `${b.description}\n` +
         "━━━━━━━━━━━━━━━━━━\n\n" +
-        acceptanceLine;
+        `Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.`;
       botReply = (botReply ? botReply + "\n" : "") + card;
     }
 

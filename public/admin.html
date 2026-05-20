@@ -598,7 +598,7 @@
         list.forEach((c) => {
           const li = document.createElement("li");
           if (c.id === activeId) li.classList.add("active");
-          const label = c.customer_name || c.customer_email || c.customer_phone || "Sin nombre";
+          const label = c.customer_name || c.customer_email || "Sin nombre";
           const status = c.status || "active";
           const subline = c.work_type || c.customer_postal_code || c.customer_phone || c.customer_email || sourceLabel(c);
           const botPaused = c.bot_enabled === false;
