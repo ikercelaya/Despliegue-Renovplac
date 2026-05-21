@@ -9,7 +9,12 @@ const { sendEmail } = require("./lib/email");
 const { buildSystemPrompt } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
 const { INVALID_PHONE_REPLY, getPhoneSubmissionStatus } = require("./lib/phone");
-const { buildLeadPatch, buildLeadPatchFromMessages } = require("./lib/lead");
+const {
+  buildLeadPatch,
+  buildLeadPatchFromMessages,
+  isLikelyInvalidCustomerName,
+  normalizeWorkType,
+} = require("./lib/lead");
 const wa = require("./lib/whatsapp");
 
 const app = express();
@@ -26,6 +31,7 @@ app.use(express.json({
   limit: "8mb",
   verify: (req, _res, buf) => { req.rawBody = buf; },
 }));
+app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use((req, res, next) => {
@@ -76,6 +82,15 @@ function hashConfirmationToken(token) {
 function normalizeEmail(value) {
   const email = String(value || "").trim().toLowerCase();
   return email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function requireAdmin(req, res, next) {
@@ -157,8 +172,11 @@ function botRecentlyAskedForPhone(messages) {
 }
 
 async function updateLeadData(conv, patch) {
+  const nullableLeadFields = new Set(["customer_name"]);
   const cleanPatch = Object.fromEntries(
-    Object.entries(patch || {}).filter(([, value]) => value !== null && value !== undefined && value !== "")
+    Object.entries(patch || {}).filter(([key, value]) =>
+      value !== undefined && value !== "" && (value !== null || nullableLeadFields.has(key))
+    )
   );
   if (!conv?.id || Object.keys(cleanPatch).length === 0) return conv;
 
@@ -172,6 +190,15 @@ async function updateLeadData(conv, patch) {
   }
   Object.assign(conv, cleanPatch);
   return conv;
+}
+
+function cleanConversationForDisplay(conv) {
+  if (!conv) return conv;
+  return {
+    ...conv,
+    customer_name: isLikelyInvalidCustomerName(conv.customer_name) ? null : conv.customer_name,
+    work_type: normalizeWorkType(conv.work_type) || conv.work_type,
+  };
 }
 
 function addBudgetAcceptanceHint(text, isWeb) {
@@ -375,6 +402,87 @@ function buildBudgetConfirmationMessage(confirmation) {
 function buildEmailConfirmationRequiredMessage(confirmation) {
   const email = confirmation?.email || "tu email";
   return `Antes de aceptar o ver el presupuesto, confirma el enlace que te he enviado a ${email}.`;
+}
+
+function renderBudgetConfirmationPage({ budgetId, token, email }) {
+  const action = `/api/budget/${encodeURIComponent(budgetId)}/confirm`;
+  return `<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>Confirmar email | Renoveplac</title>
+    <style>
+      :root { color-scheme: light; font-family: Arial, sans-serif; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f3f6f4; color: #10241f; }
+      main { width: min(92vw, 480px); background: #fff; border: 1px solid #dbe5df; border-radius: 12px; padding: 28px; box-shadow: 0 18px 45px rgba(13, 48, 38, 0.12); }
+      h1 { margin: 0 0 12px; font-size: 24px; line-height: 1.2; }
+      p { margin: 0 0 18px; line-height: 1.5; color: #40534d; }
+      strong { color: #143c32; overflow-wrap: anywhere; }
+      button { width: 100%; border: 0; border-radius: 8px; background: #143c32; color: #fff; padding: 14px 18px; font-size: 16px; font-weight: 700; cursor: pointer; }
+      button:hover { background: #0f2f27; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Confirma tu email</h1>
+      <p>Para mostrarte el presupuesto orientativo en el chat, confirma que <strong>${escapeHtml(email)}</strong> es tu correo.</p>
+      <form method="post" action="${action}">
+        <input type="hidden" name="token" value="${escapeHtml(token)}" />
+        <button type="submit">Confirmar email y ver presupuesto</button>
+      </form>
+    </main>
+  </body>
+</html>`;
+}
+
+async function confirmBudgetEmail(id, rawToken) {
+  if (!rawToken) {
+    const err = new Error("Falta token de confirmacion.");
+    err.status = 400;
+    throw err;
+  }
+
+  const confirmation = await fetchBudgetConfirmation(id);
+  if (!confirmation) {
+    const err = new Error("Confirmacion no encontrada.");
+    err.status = 404;
+    throw err;
+  }
+  if (confirmation.token_hash !== hashConfirmationToken(rawToken)) {
+    const err = new Error("Enlace de confirmacion no valido.");
+    err.status = 403;
+    throw err;
+  }
+
+  if (!confirmation.confirmed_at) {
+    const now = new Date().toISOString();
+    const { error: updateError } = await supabase
+      .from("bot_budget_email_confirmations")
+      .update({ confirmed_at: now })
+      .eq("budget_id", id);
+    if (updateError) throw updateError;
+
+    const lead = await fetchLeadStatsByEmail(confirmation.email);
+    if (lead) {
+      await supabase
+        .from("bot_leads")
+        .update({
+          email_confirmed_budget_count: Number(lead.email_confirmed_budget_count || 0) + 1,
+          updated_at: now,
+        })
+        .eq("email", confirmation.email);
+    }
+  }
+
+  const conv = await loadConversation(confirmation.conversation_id);
+  if (!conv?.access_token) {
+    const err = new Error("Conversacion no encontrada.");
+    err.status = 404;
+    throw err;
+  }
+  return { confirmation, conv };
 }
 
 async function fetchLatestPendingBudget(conversationId) {
@@ -831,41 +939,41 @@ app.get("/api/budget/:id/confirm", async (req, res) => {
   try {
     const { id } = req.params;
     const rawToken = String(req.query.token || "");
-    if (!rawToken) return res.status(400).send("Falta token de confirmación.");
+    if (!rawToken) return res.status(400).send("Falta token de confirmacion.");
 
     const confirmation = await fetchBudgetConfirmation(id);
-    if (!confirmation) return res.status(404).send("Confirmación no encontrada.");
+    if (!confirmation) return res.status(404).send("Confirmacion no encontrada.");
     if (confirmation.token_hash !== hashConfirmationToken(rawToken)) {
-      return res.status(403).send("Enlace de confirmación no válido.");
+      return res.status(403).send("Enlace de confirmacion no valido.");
     }
 
-    if (!confirmation.confirmed_at) {
-      const now = new Date().toISOString();
-      const { error: updateError } = await supabase
-        .from("bot_budget_email_confirmations")
-        .update({ confirmed_at: now })
-        .eq("budget_id", id);
-      if (updateError) throw updateError;
-
-      const lead = await fetchLeadStatsByEmail(confirmation.email);
-      if (lead) {
-        await supabase
-          .from("bot_leads")
-          .update({
-            email_confirmed_budget_count: Number(lead.email_confirmed_budget_count || 0) + 1,
-            updated_at: now,
-          })
-          .eq("email", confirmation.email);
-      }
+    if (confirmation.confirmed_at) {
+      const conv = await loadConversation(confirmation.conversation_id);
+      if (!conv?.access_token) return res.status(404).send("Conversacion no encontrada.");
+      const redirectUrl = `${PUBLIC_URL}/?t=${encodeURIComponent(conv.access_token)}&email_confirmed=1`;
+      return res.redirect(303, redirectUrl);
     }
 
-    const conv = await loadConversation(confirmation.conversation_id);
-    if (!conv?.access_token) return res.status(404).send("Conversación no encontrada.");
+    return res
+      .status(200)
+      .type("html")
+      .send(renderBudgetConfirmationPage({ budgetId: id, token: rawToken, email: confirmation.email }));
+  } catch (err) {
+    console.error("[budget/confirm:get]", err);
+    return res.status(500).send("No se pudo cargar la confirmacion.");
+  }
+});
+
+app.post("/api/budget/:id/confirm", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rawToken = String(req.body?.token || req.query?.token || "");
+    const { conv } = await confirmBudgetEmail(id, rawToken);
     const redirectUrl = `${PUBLIC_URL}/?t=${encodeURIComponent(conv.access_token)}&email_confirmed=1`;
     return res.redirect(303, redirectUrl);
   } catch (err) {
-    console.error("[budget/confirm]", err);
-    return res.status(500).send("No se pudo confirmar el presupuesto.");
+    console.error("[budget/confirm:post]", err);
+    return res.status(err.status || 500).send(err.message || "No se pudo confirmar el presupuesto.");
   }
 });
 
@@ -962,7 +1070,7 @@ app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
     .order("updated_at", { ascending: false })
     .limit(200);
   if (error) return res.status(500).json({ error: error.message });
-  return res.json({ conversations: data });
+  return res.json({ conversations: (data || []).map(cleanConversationForDisplay) });
 });
 
 app.get("/api/admin/conversations/:id", requireAdmin, async (req, res) => {
@@ -970,7 +1078,7 @@ app.get("/api/admin/conversations/:id", requireAdmin, async (req, res) => {
   if (!conv) return res.status(404).json({ error: "Conversación no encontrada." });
   const budgets = await fetchBudgets(conv.id, { includeUnconfirmed: true });
   const leadStats = await fetchLeadStatsByEmail(conv.customer_email);
-  return res.json({ ...conv, budgets, lead_stats: leadStats });
+  return res.json({ ...cleanConversationForDisplay(conv), budgets, lead_stats: leadStats });
 });
 
 app.post("/api/admin/conversations/:id/reply", requireAdmin, async (req, res) => {

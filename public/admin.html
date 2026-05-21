@@ -123,7 +123,34 @@
         text-align: center;
       }
 
-      .layout { display: grid; grid-template-columns: 340px 1fr; height: 100vh; }
+      .layout {
+        --sidebar-width: 340px;
+        display: grid;
+        grid-template-columns: var(--sidebar-width) 8px minmax(0, 1fr);
+        height: 100vh;
+      }
+      body.resizing-sidebar { cursor: col-resize; user-select: none; }
+      .sidebar-resizer {
+        background: linear-gradient(90deg, var(--navy-line), #dfe5ee);
+        cursor: col-resize;
+        touch-action: none;
+        position: relative;
+        z-index: 5;
+      }
+      .sidebar-resizer::after {
+        content: "";
+        position: absolute;
+        top: 0; bottom: 0; left: 50%;
+        width: 2px;
+        transform: translateX(-50%);
+        background: rgba(120, 136, 168, 0.55);
+      }
+      .sidebar-resizer:hover::after,
+      .sidebar-resizer:focus-visible::after,
+      body.resizing-sidebar .sidebar-resizer::after {
+        background: var(--brand-orange);
+      }
+      .sidebar-resizer:focus-visible { outline: 2px solid var(--brand-orange); outline-offset: -2px; }
 
       .sidebar {
         background: var(--navy);
@@ -289,12 +316,14 @@
         background: #fff; border-bottom: 1px solid var(--line);
         padding: 14px 22px;
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 10px 18px; font-size: 13.5px;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 14px 24px; font-size: 13.5px;
       }
-      .lead-card .field { display: flex; flex-direction: column; gap: 2px; }
+      .lead-card .field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .lead-card .field.email { grid-column: span 2; }
+      .lead-card .field.phone { min-width: 150px; }
       .lead-card .field-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); font-weight: 700; }
-      .lead-card .field-value { color: var(--text); font-weight: 500; }
+      .lead-card .field-value { color: var(--text); font-weight: 500; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
       .lead-card .field-value.empty { color: var(--muted); font-style: italic; font-weight: 400; }
       .lead-card .original-message {
         grid-column: 1 / -1;
@@ -305,6 +334,10 @@
         margin-top: 4px;
       }
       .lead-card .original-message strong { color: var(--brand-orange-hover); }
+
+      @media (max-width: 980px) {
+        .lead-card .field.email { grid-column: 1 / -1; }
+      }
 
       .messages-pane { flex: 1; overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 8px; }
       .msg-group { display: flex; gap: 10px; align-items: flex-end; }
@@ -451,6 +484,15 @@
         <ul class="conv-list" id="convList"></ul>
       </aside>
 
+      <div
+        class="sidebar-resizer"
+        id="sidebarResizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Cambiar ancho del listado de conversaciones"
+        tabindex="0"
+      ></div>
+
       <main class="main" id="mainPane">
         <div class="empty">
           <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -475,6 +517,7 @@
       const searchInput = document.getElementById("searchInput");
       const filtersEl = document.getElementById("filters");
       const toastStack = document.getElementById("toastStack");
+      const sidebarResizer = document.getElementById("sidebarResizer");
 
       let token = localStorage.getItem(TOKEN_KEY) || null;
       let activeId = null;
@@ -484,6 +527,9 @@
       let searchQuery = "";
       let renderedConversationId = null;
       const replyDraftByConversation = {};
+      const SIDEBAR_WIDTH_KEY = "renovebot.adminSidebarWidth";
+      const SIDEBAR_MIN = 280;
+      const SIDEBAR_MAX = 640;
 
       function authHeaders() { return token ? { Authorization: "Bearer " + token } : {}; }
       function escapeHtml(s) {
@@ -539,6 +585,58 @@
         el.textContent = msg;
         toastStack.appendChild(el);
         setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 0.2s"; setTimeout(() => el.remove(), 220); }, 3000);
+      }
+      function clampSidebarWidth(width) {
+        const maxByViewport = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.floor(window.innerWidth * 0.62)));
+        return Math.max(SIDEBAR_MIN, Math.min(maxByViewport, Math.round(width)));
+      }
+      function setSidebarWidth(width, persist = true) {
+        const next = clampSidebarWidth(width);
+        appScreen.style.setProperty("--sidebar-width", next + "px");
+        sidebarResizer.setAttribute("aria-valuenow", String(next));
+        sidebarResizer.setAttribute("aria-valuemin", String(SIDEBAR_MIN));
+        sidebarResizer.setAttribute("aria-valuemax", String(SIDEBAR_MAX));
+        if (persist) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
+      }
+      function initSidebarResize() {
+        const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+        if (Number.isFinite(saved) && saved > 0) setSidebarWidth(saved, false);
+
+        let dragging = false;
+        const onMove = (event) => {
+          if (!dragging) return;
+          setSidebarWidth(event.clientX);
+        };
+        const stop = () => {
+          if (!dragging) return;
+          dragging = false;
+          document.body.classList.remove("resizing-sidebar");
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", stop);
+          window.removeEventListener("pointercancel", stop);
+        };
+        sidebarResizer.addEventListener("pointerdown", (event) => {
+          dragging = true;
+          sidebarResizer.setPointerCapture?.(event.pointerId);
+          document.body.classList.add("resizing-sidebar");
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", stop);
+          window.addEventListener("pointercancel", stop);
+          event.preventDefault();
+        });
+        sidebarResizer.addEventListener("keydown", (event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          const current = Number(getComputedStyle(appScreen).getPropertyValue("--sidebar-width").replace("px", "")) || 340;
+          if (event.key === "ArrowLeft") setSidebarWidth(current - 24);
+          if (event.key === "ArrowRight") setSidebarWidth(current + 24);
+          if (event.key === "Home") setSidebarWidth(SIDEBAR_MIN);
+          if (event.key === "End") setSidebarWidth(SIDEBAR_MAX);
+          event.preventDefault();
+        });
+        window.addEventListener("resize", () => {
+          const current = Number(getComputedStyle(appScreen).getPropertyValue("--sidebar-width").replace("px", "")) || 340;
+          setSidebarWidth(current, false);
+        });
       }
 
       async function login(password) {
@@ -698,8 +796,8 @@
           '</div>';
 
         const leadFields = [
-          { label: "Email", value: conv.customer_email },
-          { label: "Teléfono", value: conv.customer_phone },
+          { label: "Email", value: conv.customer_email, cls: "email" },
+          { label: "Teléfono", value: conv.customer_phone, cls: "phone" },
           { label: "Código postal", value: conv.customer_postal_code },
           { label: "Solicitudes email", value: conv.lead_stats ? String(conv.lead_stats.budget_request_count || 0) : "" },
           { label: "Origen", value: sourceLabel(conv) },
@@ -708,7 +806,7 @@
         const leadHtml =
           '<div class="lead-card">' +
             leadFields.map((f) =>
-              '<div class="field">' +
+              '<div class="field ' + escapeHtml(f.cls || "") + '">' +
                 '<span class="field-label">' + escapeHtml(f.label) + '</span>' +
                 '<span class="field-value' + (f.value ? "" : " empty") + '">' + escapeHtml(f.value || "—") + '</span>' +
               '</div>'
@@ -918,6 +1016,7 @@
         renderList();
       });
       searchInput.addEventListener("input", (e) => { searchQuery = e.target.value.trim(); renderList(); });
+      initSidebarResize();
 
       function startApp() {
         loginScreen.style.display = "none";
