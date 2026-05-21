@@ -18,7 +18,7 @@ Chatbot de Renoveplac (reformas integrales en Lliria, Valencia) con:
 ├── lib/
 │   ├── claude.js          Llamada a Anthropic + tools create_budget y notify_human
 │   ├── db.js              Cliente Supabase
-│   ├── email.js           Nodemailer SMTP
+│   ├── email.js           Envio por Resend API + respaldo SMTP
 │   ├── prompt.js          System prompt construido con info/
 │   └── whatsapp.js        Cloud API de Meta (envío, descarga de media, firma de webhooks)
 ├── public/
@@ -67,6 +67,11 @@ PUBLIC_URL=https://pruebas-chat-bot-renove-plac.vercel.app
 SUPABASE_URL=https://xxxxx.supabase.co
 SUPABASE_SERVICE_KEY=eyJ...
 
+# Email con Resend (recomendado). RESEND_FROM debe usar un dominio verificado.
+RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxxx
+RESEND_FROM=Renoveplac <presupuestos@tu-dominio-verificado.com>
+
+# SMTP opcional como respaldo si no defines RESEND_API_KEY.
 SMTP_HOST=smtp.tu_proveedor.com
 SMTP_PORT=587
 SMTP_USER=contacto@renoveplac.com
@@ -87,6 +92,11 @@ WHATSAPP_HISTORY_LIMIT=24
 ```
 
 `PUBLIC_URL` es la URL pública del bot (la usa para los enlaces del email y debe coincidir con el dominio que configures como Callback URL del webhook de WhatsApp).
+
+Para Vercel con Resend basta con definir `RESEND_API_KEY` y `RESEND_FROM`.
+`RESEND_FROM` debe ser una direccion del dominio verificado en Resend, por ejemplo
+`Renoveplac <presupuestos@renoveplac.com>`. Si no existe `RESEND_API_KEY`,
+el sistema intenta enviar con la configuracion SMTP.
 
 ## 3. Ejecutar local
 
