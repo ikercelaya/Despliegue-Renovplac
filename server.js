@@ -14,7 +14,7 @@ const wa = require("./lib/whatsapp");
 
 const app = express();
 const port = process.env.PORT || 3000;
-const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/$/, "");
+const PUBLIC_URL = getPublicUrl();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
@@ -37,6 +37,29 @@ app.use((req, res, next) => {
 });
 
 // ---------- Helpers ----------
+
+function normalizePublicUrl(value) {
+  const clean = String(value || "").trim().replace(/\/+$/, "");
+  if (!clean) return "";
+  return /^https?:\/\//i.test(clean) ? clean : `https://${clean}`;
+}
+
+function isLocalPublicUrl(value) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(value || "");
+}
+
+function getPublicUrl() {
+  const configured = normalizePublicUrl(process.env.PUBLIC_URL);
+  if (configured && !isLocalPublicUrl(configured)) return configured;
+
+  const vercelProductionUrl = normalizePublicUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+  if (vercelProductionUrl) return vercelProductionUrl;
+
+  const vercelDeploymentUrl = normalizePublicUrl(process.env.VERCEL_URL);
+  if (vercelDeploymentUrl) return vercelDeploymentUrl;
+
+  return configured || `http://localhost:${port}`;
+}
 
 function generateToken() {
   return crypto.randomBytes(24).toString("hex");

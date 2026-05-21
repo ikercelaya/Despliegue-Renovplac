@@ -91,7 +91,7 @@ WHATSAPP_API_VERSION=v21.0
 WHATSAPP_HISTORY_LIMIT=24
 ```
 
-`PUBLIC_URL` es la URL pública del bot (la usa para los enlaces del email y debe coincidir con el dominio que configures como Callback URL del webhook de WhatsApp).
+`PUBLIC_URL` es la URL pública del bot (la usa para los enlaces del email y debe coincidir con el dominio que configures como Callback URL del webhook de WhatsApp). En producción no debe apuntar a `localhost`; usa algo como `https://despliegue-renovplac.vercel.app`.
 
 Para Vercel con Resend basta con definir `RESEND_API_KEY` y `RESEND_FROM`.
 `RESEND_FROM` debe ser una direccion del dominio verificado en Resend, por ejemplo
