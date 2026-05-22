@@ -25,6 +25,7 @@ const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
 const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 24);
+const MIN_BUDGET_AMOUNT_EUR = 600;
 const ACCEPT_BUDGET_REGEX = /^\s*(acepto|si\s+acepto|s[ií]\s+acepto|quiero\s+aceptar|aceptar)\b/i;
 
 app.use(express.json({
@@ -208,6 +209,93 @@ function addBudgetAcceptanceHint(text, isWeb) {
   const current = String(text || "").trim();
   if (/ACEPTO|Aceptar presupuesto/i.test(current)) return current;
   return current ? `${current}\n\n${hint}` : hint;
+}
+
+function normalizeLooseText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function botAskedForOwnerPermission(messages) {
+  if (!Array.isArray(messages)) return false;
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  const text = normalizeLooseText(lastAssistant?.content || "");
+  return /\b(propietari[oa]|duen[oa]|permiso|autorizacion)\b/.test(text);
+}
+
+function parseOwnerPermissionAnswer(message, askedRecently = false) {
+  const text = normalizeLooseText(message);
+  if (!text) return "unknown";
+
+  const hasPositivePermission =
+    /\b(si|claro|correcto|por supuesto|ok|vale)\b.{0,30}\b(tengo|cuento|dispongo|soy)\b/.test(text) ||
+    /\bsoy\s+(el\s+|la\s+)?(propietario|propietaria|dueno|duena)\b/.test(text) ||
+    /\bes\s+(mi|mio|mia|nuestra|nuestro)\s+(casa|vivienda|piso|local|propiedad)\b/.test(text) ||
+    /\b(si\s+)?(tengo|cuento\s+con|dispongo\s+de|me\s+han\s+dado|me\s+han\s+autorizado)\b.{0,30}\b(permiso|autorizacion)\b/.test(text);
+
+  const hasNegativePermission =
+    /\b(no\s+(tengo|cuento|dispongo)|sin\s+(permiso|autorizacion)|no\s+me\s+han\s+(dado|autorizado))\b/.test(text) ||
+    /\bno\s+soy\s+(propietario|propietaria|dueno|duena)\b.{0,40}\b(ni|y\s+no|tampoco)\b.{0,30}\b(permiso|autorizacion)\b/.test(text);
+
+  if (hasPositivePermission && !hasNegativePermission) return "confirmed";
+  if (hasNegativePermission) return "denied";
+  if (askedRecently && /^(no|nop|negativo)\b/.test(text)) return "denied";
+  if (askedRecently && /^(si|claro|correcto|por supuesto|ok|vale)\b/.test(text)) return "confirmed";
+  return "unknown";
+}
+
+function getOwnerPermissionStatus(messages) {
+  let askedRecently = false;
+  let status = "unknown";
+  for (const msg of messages || []) {
+    if (msg.role === "assistant") {
+      const text = normalizeLooseText(msg.content || "");
+      askedRecently = /\b(propietari[oa]|duen[oa]|permiso|autorizacion)\b/.test(text);
+      continue;
+    }
+    if (msg.role !== "user") continue;
+    const next = parseOwnerPermissionAnswer(msg.content, askedRecently);
+    if (next !== "unknown") status = next;
+    askedRecently = false;
+  }
+  return status;
+}
+
+function ownerPermissionDeniedByLatestReply(userMessage, previousMessages) {
+  return parseOwnerPermissionAnswer(userMessage, botAskedForOwnerPermission(previousMessages)) === "denied";
+}
+
+function ownerPermissionDeniedMessage() {
+  return (
+    "Lo entiendo. En ese caso no puedo prepararte un presupuesto, porque necesitamos que seas propietario " +
+    "o tengas permiso del dueño para valorar la reforma.\n\n" +
+    "Si más adelante tienes esa autorización, estaré encantado de ayudarte con el presupuesto."
+  );
+}
+
+function assertBudgetCanBeCreated(input, conv) {
+  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
+  if (permissionStatus === "denied") {
+    throw new Error(
+      "El cliente ha indicado que no es propietario ni tiene permiso del dueño. No generes presupuesto; explícalo con educación."
+    );
+  }
+  if (permissionStatus !== "confirmed") {
+    throw new Error(
+      "Antes de crear el presupuesto debes preguntar: ¿Eres propietario o tienes permiso del dueño para hacer la reforma?"
+    );
+  }
+
+  const amount = Number(input?.amount_eur) || 0;
+  if (amount < MIN_BUDGET_AMOUNT_EUR) {
+    throw new Error(
+      `El importe calculado (${amount || 0} EUR) está por debajo del mínimo de obra de ${MIN_BUDGET_AMOUNT_EUR} EUR. No generes presupuesto; explica el mínimo y pregunta si quiere agrupar más trabajos.`
+    );
+  }
 }
 
 async function fetchBudgetConfirmations(budgetIds) {
@@ -930,6 +1018,7 @@ app.post("/api/chat", async (req, res) => {
       return res.status(403).json({ error: "Esta conversación está cerrada." });
     }
 
+    const previousMessages = conv.messages || [];
     const { data: userMsgRow } = await supabase
       .from("bot_messages")
       .insert({
@@ -940,6 +1029,10 @@ app.post("/api/chat", async (req, res) => {
       })
       .select()
       .single();
+    conv.messages = [
+      ...previousMessages,
+      userMsgRow || { role: "user", content: userMessage || (imageUrl ? "(imagen)" : ""), image_url: imageUrl || null },
+    ];
 
     let botReply = "";
     let createdBudget = null;
@@ -955,6 +1048,30 @@ app.post("/api/chat", async (req, res) => {
         budget: accepted.budget,
         userMessage: userMsgRow,
         assistantMessage: accepted.assistantMsgRow,
+      });
+    }
+
+    if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, previousMessages)) {
+      botReply = ownerPermissionDeniedMessage();
+      const { data } = await supabase
+        .from("bot_messages")
+        .insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: botReply,
+        })
+        .select()
+        .single();
+      assistantMsgRow = data;
+
+      return res.json({
+        reply: botReply,
+        conversationId: conv.id,
+        accessToken: conv.access_token,
+        botEnabled: true,
+        budget: null,
+        userMessage: userMsgRow,
+        assistantMessage: assistantMsgRow,
       });
     }
 
@@ -992,15 +1109,13 @@ app.post("/api/chat", async (req, res) => {
 
     if (conv.bot_enabled !== false) {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
-      const history = toAnthropicMessages([
-        ...(conv.messages || []),
-        { role: "user", content: userMessage, image_url: imageUrl || null },
-      ]);
+      const history = toAnthropicMessages(conv.messages || []);
 
       const result = await runConversation({
         systemPrompt,
         messages: history,
         onBudget: async (input) => {
+          assertBudgetCanBeCreated(input, conv);
           if (!normalizeEmail(conv.customer_email)) {
             throw new Error("Falta email del cliente. Pide un email válido antes de generar el presupuesto.");
           }
@@ -1577,6 +1692,22 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       image_url: imageUrl,
     });
 
+    if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, conv.messages || [])) {
+      const reply = ownerPermissionDeniedMessage();
+      await supabase.from("bot_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: reply,
+      });
+      const sendStartedAt = Date.now();
+      const sendResult = await wa.sendText(from, reply);
+      console.log(
+        `[whatsapp] ${waMessageId}: permiso propietario denegado respondido en ${Date.now() - sendStartedAt}ms ` +
+          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+      );
+      return;
+    }
+
     const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
     await updateLeadData(conv, leadPatch);
 
@@ -1613,6 +1744,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       systemPrompt,
       messages: history,
       onBudget: async (input) => {
+        assertBudgetCanBeCreated(input, fullConv);
         if (!normalizeEmail(conv.customer_email)) {
           throw new Error("Falta email del cliente. Pide un email válido antes de generar el presupuesto.");
         }

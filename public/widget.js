@@ -92,6 +92,11 @@
 
   btn.addEventListener("click", toggleChat);
   tip.addEventListener("click", function () { openChat(); });
+  window.addEventListener("message", function (event) {
+    if (event && event.data && event.data.type === "renovebot:close") {
+      closeChat();
+    }
+  });
 
   function attach() {
     document.body.appendChild(root);

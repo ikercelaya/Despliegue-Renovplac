@@ -85,6 +85,38 @@
       .message.bot { background: #ffffff; border: 1px solid #e1e8e3; border-top-left-radius: 2px; }
       .message.user { background: #d9fdd3; border-top-right-radius: 2px; }
       .message.admin { background: #fff9d6; border: 1px solid #ecdf90; border-top-left-radius: 2px; }
+      .privacy-consent {
+        margin: 0 0 14px;
+        padding: 14px;
+        background: #ffffff;
+        border: 1px solid #dbe7e1;
+        border-left: 4px solid #143c32;
+        border-radius: 10px;
+        box-shadow: 0 8px 22px rgba(20, 60, 50, 0.08);
+      }
+      .privacy-consent h2 {
+        margin: 0 0 8px;
+        font-size: 16px;
+        line-height: 1.25;
+        color: #143c32;
+      }
+      .privacy-consent p {
+        margin: 0 0 12px;
+        font-size: 14px;
+        line-height: 1.45;
+        color: #40534d;
+      }
+      .privacy-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .privacy-actions button {
+        border: 0;
+        border-radius: 7px;
+        padding: 9px 12px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .privacy-actions .accept-privacy { background: #143c32; color: #ffffff; }
+      .privacy-actions .reject-privacy { background: #eef3f0; color: #30443d; border: 1px solid #d5e1db; }
       .budget-card {
         max-width: 92%;
         margin: 0 0 12px;
@@ -277,12 +309,14 @@
       const urlToken = params.get("t");
       const emailConfirmed = params.get("email_confirmed") === "1";
       const STORAGE_KEY = "renovebot.conversationId";
+      const PRIVACY_KEY = "renovebot.privacyAccepted";
 
       let conversationId = urlToken ? null : localStorage.getItem(STORAGE_KEY);
       let accessToken = urlToken || null;
       let lastMessageAt = null;
       let chatRequestInFlight = false;
       let pendingAttachment = null;
+      let privacyAccepted = localStorage.getItem(PRIVACY_KEY) === "1";
       const renderedMessageIds = new Set();
       const renderedBudgets = new Map();
 
@@ -337,7 +371,10 @@
         reader.readAsDataURL(file);
       }
 
-      attachButton.addEventListener("click", () => fileInput.click());
+      attachButton.addEventListener("click", () => {
+        if (!privacyAccepted) return;
+        fileInput.click();
+      });
       fileInput.addEventListener("change", (e) => {
         const f = e.target.files && e.target.files[0];
         if (f) setAttachment(f);
@@ -351,6 +388,50 @@
           .replace(/>/g, "&gt;")
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
+      }
+
+      function setInputState(isLoading) {
+        const disabled = !!isLoading || !privacyAccepted;
+        messageInput.disabled = disabled;
+        sendButton.disabled = disabled;
+        attachButton.disabled = disabled;
+        if (!disabled) messageInput.focus();
+      }
+
+      function closeChatFromPrivacy() {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: "renovebot:close" }, "*");
+        } else {
+          window.close();
+        }
+      }
+
+      function showPrivacyConsent() {
+        if (document.getElementById("privacyConsent")) return;
+        const card = document.createElement("div");
+        card.className = "privacy-consent";
+        card.id = "privacyConsent";
+        card.innerHTML =
+          '<h2>Privacidad y uso de datos</h2>' +
+          '<p>Para utilizar Renovebot, acepta que los datos que escribas en este chat puedan ser almacenados por Renoveplac para gestionar tu solicitud de presupuesto y contactar contigo.</p>' +
+          '<div class="privacy-actions">' +
+            '<button type="button" class="accept-privacy" id="acceptPrivacy">Aceptar y continuar</button>' +
+            '<button type="button" class="reject-privacy" id="rejectPrivacy">Rechazar</button>' +
+          '</div>';
+        messagesEl.appendChild(card);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        document.getElementById("acceptPrivacy").addEventListener("click", () => {
+          privacyAccepted = true;
+          localStorage.setItem(PRIVACY_KEY, "1");
+          card.remove();
+          setInputState(false);
+          loadInitial();
+        });
+        document.getElementById("rejectPrivacy").addEventListener("click", () => {
+          privacyAccepted = false;
+          setInputState(false);
+          closeChatFromPrivacy();
+        });
       }
 
       function renderMessage(msg) {
@@ -445,9 +526,7 @@
 
       function setLoading(isLoading) {
         typingEl.classList.toggle("visible", isLoading);
-        messageInput.disabled = isLoading;
-        sendButton.disabled = isLoading;
-        if (!isLoading) messageInput.focus();
+        setInputState(isLoading);
       }
 
       async function loadInitial() {
@@ -490,6 +569,11 @@
       }
 
       async function sendMessage(text) {
+        if (!privacyAccepted) {
+          showPrivacyConsent();
+          setInputState(false);
+          return;
+        }
         const pendingImage = pendingAttachment;
         let uploadedUrl = null;
 
@@ -561,6 +645,7 @@
       }
 
       async function poll() {
+        if (!privacyAccepted) return;
         if (chatRequestInFlight) return;
         if (!conversationId && !accessToken) return;
         try {
@@ -581,6 +666,10 @@
 
       chatForm.addEventListener("submit", (e) => {
         e.preventDefault();
+        if (!privacyAccepted) {
+          showPrivacyConsent();
+          return;
+        }
         const text = messageInput.value.trim();
         if (!text && !pendingAttachment) return;
         messageInput.value = "";
@@ -593,7 +682,12 @@
         location.href = location.pathname;
       });
 
-      loadInitial();
+      if (privacyAccepted) {
+        loadInitial();
+      } else {
+        showPrivacyConsent();
+        setInputState(false);
+      }
       setInterval(poll, 6000);
     </script>
   </body>
