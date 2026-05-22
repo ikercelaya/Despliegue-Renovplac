@@ -341,17 +341,24 @@ async function registerBudgetEmailConfirmation(budget, conv) {
   if (error) throw error;
 
   const requestCount = Number(lead?.budget_request_count || 1);
+  const firstName = String(conv.customer_name || "").trim().split(/\s+/)[0] || "";
+  const html = buildBudgetEmailConfirmationHtml({
+    firstName,
+    email,
+    confirmUrl,
+    requestCount,
+  });
   const text = [
-    `Hola${conv.customer_name ? ` ${conv.customer_name}` : ""},`,
+    `Hola${firstName ? ` ${firstName}` : ""},`,
     "",
-    "Has solicitado un presupuesto orientativo en Renoveplac.",
-    "Para verlo en el chat, confirma primero que este correo es tuyo pulsando este enlace:",
+    "Hemos preparado tu presupuesto orientativo de Renoveplac.",
+    "Para verlo en el chat, confirma primero que este correo es tuyo abriendo este enlace:",
     "",
     confirmUrl,
     "",
     `Solicitudes registradas con este email: ${requestCount}.`,
     "",
-    "Si no has sido tu, puedes ignorar este mensaje.",
+    "Si no has solicitado este presupuesto, puedes ignorar este mensaje.",
   ].join("\n");
 
   const sendResult = await safeSendEmail({
@@ -359,6 +366,7 @@ async function registerBudgetEmailConfirmation(budget, conv) {
     replyTo: COMPANY_EMAIL,
     subject: "Confirma tu email para ver el presupuesto de Renoveplac",
     text,
+    html,
   }, "budget/email-confirmation");
   if (sendResult?.error || sendResult?.mocked) {
     await supabase
@@ -369,6 +377,95 @@ async function registerBudgetEmailConfirmation(budget, conv) {
   }
 
   return { email, confirmUrl, requestCount };
+}
+
+function buildBudgetEmailConfirmationHtml({ firstName, email, confirmUrl, requestCount }) {
+  const greeting = firstName ? `Hola ${escapeHtml(firstName)},` : "Hola,";
+  const safeEmail = escapeHtml(email);
+  const safeUrl = escapeHtml(confirmUrl);
+  const count = Number(requestCount || 1);
+
+  return `<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
+    <title>Confirma tu email para ver el presupuesto</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f3f6f4;font-family:Arial,Helvetica,sans-serif;color:#11231f;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+      Confirma tu email para abrir tu presupuesto orientativo de Renoveplac.
+    </div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f3f6f4;margin:0;padding:28px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border:1px solid #dce7e1;border-radius:16px;overflow:hidden;box-shadow:0 16px 42px rgba(15,47,39,0.10);">
+            <tr>
+              <td style="background:#143c32;padding:24px 28px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                  <tr>
+                    <td>
+                      <div style="font-size:22px;line-height:1.1;font-weight:800;color:#ffffff;letter-spacing:.2px;">Renoveplac</div>
+                      <div style="margin-top:6px;font-size:13px;line-height:1.4;color:#cfe1da;">Reformas integrales en Llíria y alrededores</div>
+                    </td>
+                    <td align="right" style="vertical-align:top;">
+                      <span style="display:inline-block;background:#ff7821;color:#ffffff;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;">Presupuesto</span>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:30px 28px 10px;">
+                <h1 style="margin:0 0 14px;font-size:24px;line-height:1.25;color:#102820;">Confirma tu email para ver el presupuesto</h1>
+                <p style="margin:0 0 18px;font-size:16px;line-height:1.6;color:#33443f;">${greeting}</p>
+                <p style="margin:0 0 18px;font-size:16px;line-height:1.6;color:#33443f;">
+                  Hemos preparado tu presupuesto orientativo. Para mostrarlo en el chat, necesitamos confirmar que <strong style="color:#143c32;">${safeEmail}</strong> es tu correo.
+                </p>
+                <table role="presentation" cellspacing="0" cellpadding="0" style="margin:26px 0 22px;">
+                  <tr>
+                    <td align="center" style="border-radius:10px;background:#ff7821;">
+                      <a href="${safeUrl}" style="display:inline-block;padding:15px 24px;border-radius:10px;background:#ff7821;color:#ffffff;text-decoration:none;font-size:16px;font-weight:800;">
+                        Confirmar email y ver presupuesto
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+                <div style="background:#f7faf8;border:1px solid #dbe7e1;border-radius:12px;padding:15px 16px;margin:0 0 22px;">
+                  <p style="margin:0 0 6px;font-size:13px;font-weight:800;color:#143c32;text-transform:uppercase;letter-spacing:.3px;">Verificación segura</p>
+                  <p style="margin:0;font-size:14px;line-height:1.55;color:#4b5c56;">
+                    Este paso ayuda a proteger tus datos y evita que alguien use tu email para solicitar presupuestos sin permiso.
+                  </p>
+                </div>
+                <p style="margin:0 0 8px;font-size:13px;line-height:1.5;color:#66736f;">Si el botón no funciona, copia y pega este enlace en tu navegador:</p>
+                <p style="margin:0 0 24px;font-size:13px;line-height:1.5;word-break:break-all;">
+                  <a href="${safeUrl}" style="color:#143c32;text-decoration:underline;">${safeUrl}</a>
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 28px 28px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #edf1ef;padding-top:18px;">
+                  <tr>
+                    <td style="font-size:13px;line-height:1.55;color:#6b7773;">
+                      Solicitudes registradas con este email: <strong style="color:#143c32;">${count}</strong><br>
+                      Si no has solicitado este presupuesto, puedes ignorar este mensaje.
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+          <p style="max-width:620px;margin:16px auto 0;font-size:12px;line-height:1.5;color:#7a8581;text-align:center;">
+            Renoveplac · Presupuestos orientativos sujetos a visita técnica y confirmación de medidas.
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
 }
 
 async function rollbackBudgetCreation(budget, conv) {
