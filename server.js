@@ -4,7 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
 
-const { supabase } = require("./lib/db");
+const { supabase, SUPABASE_URL } = require("./lib/db");
 const { sendEmail } = require("./lib/email");
 const { buildSystemPrompt } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
@@ -101,6 +101,32 @@ function requireAdmin(req, res, next) {
     return res.status(401).json({ error: "No autorizado." });
   }
   return next();
+}
+
+function isSupabaseConnectionError(error) {
+  const text = [
+    error?.message,
+    error?.details,
+    error?.hint,
+    error?.cause?.message,
+    error?.stack,
+  ].filter(Boolean).join(" ");
+  return /fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|Failed to parse URL/i.test(text);
+}
+
+function dbConnectionErrorPayload(error) {
+  return {
+    error:
+      "No se pudo conectar con Supabase. Revisa en Vercel que SUPABASE_URL y SUPABASE_SERVICE_KEY apunten al proyecto correcto.",
+    detail: error?.message || "Supabase connection failed",
+    supabaseHost: (() => {
+      try {
+        return SUPABASE_URL ? new URL(SUPABASE_URL).host : "";
+      } catch (_err) {
+        return "";
+      }
+    })(),
+  };
 }
 
 async function loadConversation(conversationId) {
@@ -1217,6 +1243,9 @@ app.post("/api/chat", async (req, res) => {
     });
   } catch (err) {
     console.error("[chat]", err);
+    if (isSupabaseConnectionError(err)) {
+      return res.status(503).json(dbConnectionErrorPayload(err));
+    }
     return res.status(500).json({ error: "Error procesando el mensaje." });
   }
 });
@@ -1397,15 +1426,28 @@ app.post("/api/admin/login", (req, res) => {
 });
 
 app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
-  const { data, error } = await supabase
-    .from("bot_conversations")
-    .select(
-      "id, customer_name, customer_email, customer_phone, customer_postal_code, work_type, status, bot_enabled, created_at, updated_at, source, channel"
-    )
-    .order("updated_at", { ascending: false })
-    .limit(200);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ conversations: (data || []).map(cleanConversationForDisplay) });
+  try {
+    const { data, error } = await supabase
+      .from("bot_conversations")
+      .select(
+        "id, customer_name, customer_email, customer_phone, customer_postal_code, work_type, status, bot_enabled, created_at, updated_at, source, channel"
+      )
+      .order("updated_at", { ascending: false })
+      .limit(200);
+    if (error) {
+      const payload = isSupabaseConnectionError(error)
+        ? dbConnectionErrorPayload(error)
+        : { error: error.message };
+      return res.status(isSupabaseConnectionError(error) ? 503 : 500).json(payload);
+    }
+    return res.json({ conversations: (data || []).map(cleanConversationForDisplay) });
+  } catch (err) {
+    console.error("[admin/conversations]", err);
+    if (isSupabaseConnectionError(err)) {
+      return res.status(503).json(dbConnectionErrorPayload(err));
+    }
+    return res.status(500).json({ error: err.message || "Error cargando conversaciones." });
+  }
 });
 
 app.get("/api/admin/conversations/:id", requireAdmin, async (req, res) => {
