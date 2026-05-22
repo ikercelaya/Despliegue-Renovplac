@@ -342,7 +342,7 @@ async function registerBudgetEmailConfirmation(budget, conv) {
 
   const requestCount = Number(lead?.budget_request_count || 1);
   const firstName = String(conv.customer_name || "").trim().split(/\s+/)[0] || "";
-  const html = buildBudgetEmailConfirmationHtml({
+  const html = buildProfessionalBudgetEmailConfirmationHtml({
     firstName,
     email,
     confirmUrl,
@@ -460,6 +460,129 @@ function buildBudgetEmailConfirmationHtml({ firstName, email, confirmUrl, reques
           </table>
           <p style="max-width:620px;margin:16px auto 0;font-size:12px;line-height:1.5;color:#7a8581;text-align:center;">
             Renoveplac · Presupuestos orientativos sujetos a visita técnica y confirmación de medidas.
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+}
+
+function buildProfessionalBudgetEmailConfirmationHtml({ firstName, email, confirmUrl, requestCount }) {
+  const greeting = firstName ? `Hola ${escapeHtml(firstName)},` : "Hola,";
+  const safeEmail = escapeHtml(email);
+  const safeUrl = escapeHtml(confirmUrl);
+  const count = Number(requestCount || 1);
+
+  return `<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
+    <title>Confirma tu email para ver el presupuesto</title>
+  </head>
+  <body style="margin:0;padding:0;background:#eef4f1;font-family:Arial,Helvetica,sans-serif;color:#11231f;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+      Renoveplac ha preparado tu presupuesto orientativo. Confirma tu email para acceder de forma segura.
+    </div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef4f1;margin:0;padding:30px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border:1px solid #dce7e1;border-radius:18px;overflow:hidden;box-shadow:0 18px 46px rgba(15,47,39,0.12);">
+            <tr>
+              <td style="background:#143c32;padding:26px 30px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                  <tr>
+                    <td>
+                      <div style="font-size:24px;line-height:1.1;font-weight:800;color:#ffffff;letter-spacing:.2px;">Renoveplac</div>
+                      <div style="margin-top:7px;font-size:13px;line-height:1.4;color:#cfe1da;">Reformas integrales, pladur y baños en Llíria y alrededores</div>
+                    </td>
+                    <td align="right" style="vertical-align:top;">
+                      <span style="display:inline-block;background:#ff7821;color:#ffffff;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;">Acceso seguro</span>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px 30px 12px;">
+                <p style="margin:0 0 12px;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:#ff7821;">Verificación de solicitud</p>
+                <h1 style="margin:0 0 16px;font-size:28px;line-height:1.18;color:#102820;">Confirma tu email para acceder a tu presupuesto</h1>
+                <p style="margin:0 0 18px;font-size:16px;line-height:1.6;color:#33443f;">${greeting}</p>
+                <p style="margin:0 0 20px;font-size:16px;line-height:1.65;color:#33443f;">
+                  Hemos preparado una estimación orientativa a partir de los datos que nos has indicado en el chat. Antes de mostrarla, necesitamos confirmar que <strong style="color:#143c32;">${safeEmail}</strong> es tu correo.
+                </p>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7faf8;border:1px solid #dbe7e1;border-radius:14px;margin:0 0 24px;">
+                  <tr>
+                    <td style="padding:18px 18px 16px;">
+                      <p style="margin:0 0 8px;font-size:15px;font-weight:800;color:#143c32;">Tu presupuesto queda reservado</p>
+                      <p style="margin:0;font-size:14px;line-height:1.6;color:#40534d;">
+                        Al confirmar este enlace, Renovebot abrirá el presupuesto en tu conversación y nuestro equipo podrá identificar correctamente tu solicitud.
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+                <table role="presentation" cellspacing="0" cellpadding="0" style="margin:28px 0 24px;">
+                  <tr>
+                    <td align="center" style="border-radius:12px;background:#ff7821;box-shadow:0 8px 18px rgba(255,120,33,.24);">
+                      <a href="${safeUrl}" style="display:inline-block;padding:16px 26px;border-radius:12px;background:#ff7821;color:#ffffff;text-decoration:none;font-size:16px;font-weight:800;">
+                        Confirmar email y abrir presupuesto
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:-12px 0 24px;font-size:13px;line-height:1.5;color:#66736f;">El botón te llevará a una pantalla segura de confirmación. Después volverás al chat para ver el presupuesto.</p>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7faf8;border:1px solid #dbe7e1;border-radius:14px;margin:0 0 22px;">
+                  <tr>
+                    <td style="padding:18px 18px 16px;">
+                      <p style="margin:0 0 12px;font-size:14px;font-weight:800;color:#143c32;text-transform:uppercase;letter-spacing:.4px;">Por qué hacemos esta verificación</p>
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                        <tr>
+                          <td width="28" style="vertical-align:top;padding:2px 10px 10px 0;"><span style="display:inline-block;width:24px;height:24px;border-radius:50%;background:#143c32;color:#ffffff;text-align:center;line-height:24px;font-size:13px;font-weight:800;">1</span></td>
+                          <td style="padding:0 0 10px;font-size:14px;line-height:1.55;color:#40534d;">Comprobamos que el correo pertenece a la persona que ha solicitado el presupuesto.</td>
+                        </tr>
+                        <tr>
+                          <td width="28" style="vertical-align:top;padding:2px 10px 10px 0;"><span style="display:inline-block;width:24px;height:24px;border-radius:50%;background:#143c32;color:#ffffff;text-align:center;line-height:24px;font-size:13px;font-weight:800;">2</span></td>
+                          <td style="padding:0 0 10px;font-size:14px;line-height:1.55;color:#40534d;">Protegemos tus datos de contacto y evitamos solicitudes realizadas con correos ajenos.</td>
+                        </tr>
+                        <tr>
+                          <td width="28" style="vertical-align:top;padding:2px 10px 0 0;"><span style="display:inline-block;width:24px;height:24px;border-radius:50%;background:#143c32;color:#ffffff;text-align:center;line-height:24px;font-size:13px;font-weight:800;">3</span></td>
+                          <td style="padding:0;font-size:14px;line-height:1.55;color:#40534d;">Dejamos la solicitud bien identificada para que Renoveplac pueda revisarla correctamente.</td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 24px;">
+                  <tr>
+                    <td style="padding:14px 16px;border-left:4px solid #ff7821;background:#fff8f3;border-radius:10px;">
+                      <p style="margin:0;font-size:14px;line-height:1.55;color:#5c4b3f;"><strong style="color:#143c32;">Nota de seguridad:</strong> este enlace solo confirma tu email. El presupuesto es orientativo y se revisará después de la visita técnica, tomando medidas y definiendo materiales.</p>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:0 0 8px;font-size:13px;line-height:1.5;color:#66736f;">Si el botón no funciona, también puedes copiar y pegar este enlace en tu navegador:</p>
+                <p style="margin:0 0 24px;font-size:13px;line-height:1.5;word-break:break-all;">
+                  <a href="${safeUrl}" style="color:#143c32;text-decoration:underline;">${safeUrl}</a>
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 30px 30px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #edf1ef;padding-top:18px;">
+                  <tr>
+                    <td style="font-size:13px;line-height:1.65;color:#6b7773;">
+                      Solicitudes de presupuesto registradas con este email: <strong style="color:#143c32;">${count}</strong><br>
+                      Si tú no has solicitado este presupuesto, puedes ignorar este mensaje sin realizar ninguna acción.
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+          <p style="max-width:640px;margin:16px auto 0;font-size:12px;line-height:1.5;color:#7a8581;text-align:center;">
+            Renoveplac · Reformas integrales, pladur, baños, cocinas, pintura y trabajos de albañilería.
           </p>
         </td>
       </tr>
