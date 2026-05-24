@@ -8,7 +8,7 @@ const { supabase, SUPABASE_URL } = require("./lib/db");
 const { sendEmail } = require("./lib/email");
 const { buildSystemPrompt } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
-const { INVALID_PHONE_REPLY, getPhoneSubmissionStatus } = require("./lib/phone");
+const { INVALID_PHONE_REPLY, getPhoneSubmissionStatus, normalizeSpanishPhone } = require("./lib/phone");
 const {
   buildLeadPatch,
   buildLeadPatchFromMessages,
@@ -85,6 +85,81 @@ function hashConfirmationToken(token) {
 function normalizeEmail(value) {
   const email = String(value || "").trim().toLowerCase();
   return email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+}
+
+function normalizeFormKey(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function collectFormFields(value, prefix = "", out = []) {
+  if (value === null || value === undefined) return out;
+  if (typeof value !== "object") {
+    if (prefix) out.push({ key: prefix, value: String(value).trim() });
+    return out;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectFormFields(item, `${prefix} ${index}`.trim(), out));
+    return out;
+  }
+
+  const maybeValue = value.value ?? value.value_raw ?? value.raw_value ?? value.default_value;
+  if (maybeValue !== undefined) {
+    const keys = [
+      prefix,
+      value.name,
+      value.label,
+      value.title,
+      value.id,
+      value.key,
+    ].filter(Boolean);
+    keys.forEach((key) => out.push({ key: String(key), value: String(maybeValue).trim() }));
+  }
+
+  Object.entries(value).forEach(([key, child]) => {
+    if (["value", "value_raw", "raw_value", "default_value"].includes(key)) return;
+    collectFormFields(child, `${prefix} ${key}`.trim(), out);
+  });
+  return out;
+}
+
+function readFormValue(body, aliases) {
+  const fields = collectFormFields(body);
+  const normalizedAliases = aliases.map(normalizeFormKey);
+  const exact = fields.find((field) => normalizedAliases.includes(normalizeFormKey(field.key)));
+  if (exact?.value) return exact.value;
+  const partial = fields.find((field) => {
+    const key = normalizeFormKey(field.key);
+    return normalizedAliases.some((alias) => key.includes(alias) || alias.includes(key));
+  });
+  return partial?.value || "";
+}
+
+function normalizePhoneForWhatsapp(value) {
+  const digitsOnly = String(value || "").replace(/\D/g, "");
+  if (/^34[6-9]\d{8}$/.test(digitsOnly)) return digitsOnly;
+  if (/^[6-9]\d{8}$/.test(digitsOnly)) return `34${digitsOnly}`;
+
+  const normalized = normalizeSpanishPhone(value);
+  if (!normalized) return "";
+  const digits = normalized.replace(/\D/g, "");
+  return digits.length === 9 ? `34${digits}` : digits;
+}
+
+function buildFormWhatsappGreeting({ name, workType, postalCode }) {
+  const firstName = String(name || "").trim().split(/\s+/)[0] || "";
+  const introName = firstName ? ` ${firstName}` : "";
+  const workText = workType ? ` sobre ${String(workType).toLowerCase()}` : "";
+  const zoneText = postalCode ? ` Tengo anotado el codigo postal ${postalCode}.` : "";
+  return (
+    `Hola${introName}, soy Renovebot, el asistente de Renoveplac. Hemos recibido tu solicitud${workText} desde la web.` +
+    `${zoneText}\n\n` +
+    "Para ayudarte con el presupuesto, cuentame que reforma tienes en mente y cualquier detalle importante: medidas aproximadas, estado actual o plazo que buscas."
+  );
 }
 
 function escapeHtml(value) {
@@ -986,28 +1061,30 @@ app.post("/api/form", async (req, res) => {
       }
     }
 
-    const name = (req.body?.name || req.body?.nombre || "").trim();
-    const email = (req.body?.email || req.body?.correo || "").trim();
-    const phone = (req.body?.phone || req.body?.telefono || "").trim();
-    const postalCode = (req.body?.postal_code || req.body?.cp || "").trim();
-    const workType = (req.body?.work_type || req.body?.tipo_trabajo || "").trim();
-    const message = (req.body?.message || req.body?.mensaje || "").trim();
+    const name = readFormValue(req.body, ["name", "nombre", "nombre y apellido", "nombre completo"]).trim();
+    const email = readFormValue(req.body, ["email", "correo", "correo electronico", "e-mail"]).trim();
+    const phone = readFormValue(req.body, ["phone", "telefono", "telefono movil", "movil", "whatsapp"]).trim();
+    const postalCode = readFormValue(req.body, ["postal_code", "codigo postal", "cp"]).trim();
+    const workType = readFormValue(req.body, ["work_type", "tipo trabajo", "tipo de trabajo", "servicio", "reforma"]).trim();
+    const message = readFormValue(req.body, ["message", "mensaje", "comentarios", "descripcion"]).trim();
 
     if (!email || !name) {
       return res.status(400).json({ error: "Faltan datos obligatorios (nombre y email)." });
     }
 
+    const whatsappPhone = normalizePhoneForWhatsapp(phone);
     const token = generateToken();
     const { data: conv, error } = await supabase
       .from("bot_conversations")
       .insert({
         customer_name: name,
         customer_email: email,
-        customer_phone: phone || null,
+        customer_phone: whatsappPhone || phone || null,
         customer_postal_code: postalCode || null,
         work_type: workType || null,
         initial_message: message || null,
         source: "form",
+        channel: whatsappPhone ? "whatsapp" : null,
         access_token: token,
       })
       .select()
@@ -1015,33 +1092,44 @@ app.post("/api/form", async (req, res) => {
     if (error) throw error;
 
     const firstName = name.split(" ")[0];
-    const greeting = `Hola ${firstName}, soy Renovebot, el asistente de Renoveplac. Hemos recibido tu solicitud${workType ? ` sobre ${workType.toLowerCase()}` : ""}. Para preparar un presupuesto orientativo, cuéntame un poco más: ¿qué dimensiones aproximadas tiene la zona y para cuándo te gustaría empezar?`;
+    const greeting = buildFormWhatsappGreeting({ name, workType, postalCode });
     await supabase.from("bot_messages").insert({
       conversation_id: conv.id,
       role: "assistant",
       content: greeting,
     });
 
+    let whatsappSent = false;
+    if (whatsappPhone) {
+      const sendResult = await wa.sendText(whatsappPhone, greeting);
+      whatsappSent = !!sendResult.ok;
+      if (!whatsappSent) {
+        console.warn(`[form] No se pudo iniciar WhatsApp para ${whatsappPhone}:`, JSON.stringify(sendResult.error || sendResult));
+      }
+    }
+
     const chatUrl = `${PUBLIC_URL}/?t=${token}`;
-    await safeSendEmail({
-      to: email,
-      replyTo: COMPANY_EMAIL,
-      subject: "Hemos recibido tu solicitud — Renoveplac",
-      text: `Hola ${firstName},\n\nGracias por contactar con Renoveplac. Hemos recibido tu mensaje${workType ? ` sobre ${workType.toLowerCase()}` : ""}.\n\nPara agilizar tu presupuesto, sigue la conversación con nuestro asistente desde el siguiente enlace:\n${chatUrl}\n\nUn saludo,\n${COMPANY_NAME}\nRenoveplac · ${COMPANY_EMAIL}`,
-      html: `<p>Hola ${firstName},</p>
-        <p>Gracias por contactar con Renoveplac. Hemos recibido tu mensaje${workType ? ` sobre <strong>${workType}</strong>` : ""}.</p>
-        <p>Para agilizar tu presupuesto, sigue la conversación con nuestro asistente desde el siguiente enlace:</p>
-        <p><a href="${chatUrl}">${chatUrl}</a></p>
-        <p>Un saludo,<br>${COMPANY_NAME}<br>Renoveplac · ${COMPANY_EMAIL}</p>`,
-    }, "form/cliente");
+    if (!whatsappSent) {
+      await safeSendEmail({
+        to: email,
+        replyTo: COMPANY_EMAIL,
+        subject: "Hemos recibido tu solicitud — Renoveplac",
+        text: `Hola ${firstName},\n\nGracias por contactar con Renoveplac. Hemos recibido tu mensaje${workType ? ` sobre ${workType.toLowerCase()}` : ""}.\n\nPara agilizar tu presupuesto, sigue la conversación con nuestro asistente desde el siguiente enlace:\n${chatUrl}\n\nUn saludo,\n${COMPANY_NAME}\nRenoveplac · ${COMPANY_EMAIL}`,
+        html: `<p>Hola ${firstName},</p>
+          <p>Gracias por contactar con Renoveplac. Hemos recibido tu mensaje${workType ? ` sobre <strong>${workType}</strong>` : ""}.</p>
+          <p>Para agilizar tu presupuesto, sigue la conversación con nuestro asistente desde el siguiente enlace:</p>
+          <p><a href="${chatUrl}">${chatUrl}</a></p>
+          <p>Un saludo,<br>${COMPANY_NAME}<br>Renoveplac · ${COMPANY_EMAIL}</p>`,
+      }, "form/cliente");
+    }
 
     await safeSendEmail({
       to: COMPANY_EMAIL,
       subject: `Nuevo lead desde web — ${name}${workType ? ` (${workType})` : ""}`,
-      text: `Lead recibido desde el formulario de la web.\n\nNombre: ${name}\nEmail: ${email}\nTeléfono: ${phone || "(sin teléfono)"}\nCP: ${postalCode || "(sin CP)"}\nTipo de obra: ${workType || "(no especificado)"}\nMensaje:\n${message || "(sin mensaje)"}\n\nVer conversación: ${PUBLIC_URL}/admin#${conv.id}`,
+      text: `Lead recibido desde el formulario de la web.\n\nNombre: ${name}\nEmail: ${email}\nTeléfono: ${whatsappPhone || phone || "(sin teléfono)"}\nCP: ${postalCode || "(sin CP)"}\nTipo de obra: ${workType || "(no especificado)"}\nCanal de inicio: ${whatsappSent ? "WhatsApp enviado" : whatsappPhone ? "WhatsApp no enviado, fallback email" : "Email/chat web"}\nMensaje:\n${message || "(sin mensaje)"}\n\nVer conversación: ${PUBLIC_URL}/admin#${conv.id}`,
     }, "form/empresa");
 
-    return res.json({ ok: true, conversationId: conv.id, chatUrl });
+    return res.json({ ok: true, conversationId: conv.id, chatUrl, whatsappSent });
   } catch (err) {
     console.error("[form]", err);
     return res.status(500).json({ error: "No se pudo registrar el formulario." });
@@ -1496,13 +1584,33 @@ app.get("/api/admin/conversations/:id", requireAdmin, async (req, res) => {
 app.post("/api/admin/conversations/:id/reply", requireAdmin, async (req, res) => {
   const content = String(req.body?.content || "").trim();
   if (!content) return res.status(400).json({ error: "Mensaje vacío." });
+  const { data: conv, error: convError } = await supabase
+    .from("bot_conversations")
+    .select("id, channel, customer_phone")
+    .eq("id", req.params.id)
+    .maybeSingle();
+  if (convError || !conv) return res.status(404).json({ error: "Conversación no encontrada." });
+
   const { error } = await supabase.from("bot_messages").insert({
     conversation_id: req.params.id,
     role: "admin",
     content,
   });
   if (error) return res.status(500).json({ error: error.message });
-  return res.json({ ok: true });
+
+  let whatsappSent = false;
+  if (conv.channel === "whatsapp" && conv.customer_phone) {
+    const sendResult = await wa.sendText(
+      conv.customer_phone,
+      `Luis - Equipo de Renoveplac:\n${content}`
+    );
+    whatsappSent = !!sendResult.ok;
+    if (!whatsappSent) {
+      console.warn(`[admin/reply] No se pudo enviar WhatsApp a ${conv.customer_phone}:`, JSON.stringify(sendResult.error || sendResult));
+    }
+  }
+
+  return res.json({ ok: true, whatsappSent });
 });
 
 app.post("/api/admin/conversations/:id/toggle-bot", requireAdmin, async (req, res) => {
