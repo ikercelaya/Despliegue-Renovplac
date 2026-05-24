@@ -24,7 +24,9 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
-const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 24);
+const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 12);
+const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 1);
+const WHATSAPP_FAST_GREETING_ENABLED = process.env.WHATSAPP_FAST_GREETING_ENABLED !== "0";
 const MIN_BUDGET_AMOUNT_EUR = 600;
 const ACCEPT_BUDGET_REGEX = /^\s*(acepto|si\s+acepto|s[ií]\s+acepto|quiero\s+aceptar|aceptar)\b/i;
 
@@ -190,6 +192,39 @@ function recentMessages(messages, limit) {
   if (!Array.isArray(messages)) return [];
   const n = Math.max(1, Number(limit) || 24);
   return messages.slice(-n);
+}
+
+function prepareWhatsappModelMessages(messages) {
+  const recent = recentMessages(messages, WHATSAPP_HISTORY_LIMIT);
+  let remainingImages = Math.max(0, Number(WHATSAPP_IMAGE_HISTORY_LIMIT) || 0);
+
+  const prepared = recent.map((msg) => ({ ...msg }));
+  for (let i = prepared.length - 1; i >= 0; i -= 1) {
+    const msg = prepared[i];
+    if (!msg?.image_url || msg.role !== "user") continue;
+    if (remainingImages > 0) {
+      remainingImages -= 1;
+      continue;
+    }
+    prepared[i] = {
+      ...msg,
+      image_url: null,
+      content:
+        msg.content && msg.content !== "(imagen)"
+          ? `${msg.content}\n(Foto anterior omitida para responder mas rapido.)`
+          : "(Foto anterior omitida para responder mas rapido.)",
+    };
+  }
+  return prepared;
+}
+
+function getFastWhatsappGreetingReply(message, conv) {
+  if (!WHATSAPP_FAST_GREETING_ENABLED) return "";
+  const text = normalizeLooseText(message).replace(/[^a-z0-9\s]/g, "").trim();
+  if (!/^(hola|buenas|buenos dias|buenas tardes|buenas noches|hello|hi)(\s+(que tal|como estas))?$/.test(text)) return "";
+  const priorUserMessages = (conv?.messages || []).filter((msg) => msg.role === "user").length;
+  if (priorUserMessages > 0) return "";
+  return "Hola, soy Renovebot, de Renoveplac. Cuentame que reforma tienes en mente y en que zona seria.";
 }
 
 function botRecentlyAskedForPhone(messages) {
@@ -1727,14 +1762,26 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
     }
 
-    await supabase.from("bot_messages").insert({
+    const previousMessages = conv.messages || [];
+    const { data: userMsgRow, error: userMsgError } = await supabase.from("bot_messages").insert({
       conversation_id: conv.id,
       role: "user",
       content: userMessage || (imageUrl ? "(imagen)" : ""),
       image_url: imageUrl,
-    });
+    })
+      .select("id, role, content, image_url, created_at")
+      .single();
+    if (userMsgError) throw userMsgError;
+    const messagesWithCurrent = [
+      ...previousMessages,
+      userMsgRow || {
+        role: "user",
+        content: userMessage || (imageUrl ? "(imagen)" : ""),
+        image_url: imageUrl,
+      },
+    ];
 
-    if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, conv.messages || [])) {
+    if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, previousMessages)) {
       const reply = ownerPermissionDeniedMessage();
       await supabase.from("bot_messages").insert({
         conversation_id: conv.id,
@@ -1750,15 +1797,31 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       return;
     }
 
-    const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
+    const leadPatch = buildLeadPatch(conv, userMessage, messagesWithCurrent);
     await updateLeadData(conv, leadPatch);
 
     if (conv.bot_enabled === false) return;
 
+    const fastGreetingReply = getFastWhatsappGreetingReply(userMessage, { ...conv, messages: previousMessages });
+    if (fastGreetingReply) {
+      await supabase.from("bot_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: fastGreetingReply,
+      });
+      const sendStartedAt = Date.now();
+      const sendResult = await wa.sendText(from, fastGreetingReply);
+      console.log(
+        `[whatsapp] ${waMessageId}: saludo rapido enviado en ${Date.now() - sendStartedAt}ms ` +
+          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+      );
+      return;
+    }
+
     const phoneStatus = getPhoneSubmissionStatus(userMessage);
     const phoneAttempted =
       !leadPatch.customer_email &&
-      (phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage)));
+      (phoneStatus.attempted || (botRecentlyAskedForPhone(messagesWithCurrent) && /\d/.test(userMessage)));
     if (phoneAttempted && !phoneStatus.valid) {
       await supabase.from("bot_messages").insert({
         conversation_id: conv.id,
@@ -1774,12 +1837,17 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       return;
     }
 
-    const fullConv = await loadConversation(conv.id);
+    const fullConv = { ...conv, messages: messagesWithCurrent };
     const systemPrompt = buildSystemPrompt(
       buildContext(fullConv) + "\nCANAL: WhatsApp. El cliente NO tiene botones; para aceptar un presupuesto debe responder 'ACEPTO'."
     );
-    const history = toAnthropicMessages(recentMessages(fullConv?.messages || [], WHATSAPP_HISTORY_LIMIT));
-    console.log(`[whatsapp] ${waMessageId}: enviando ${history.length} mensajes de historial al modelo`);
+    const modelMessages = prepareWhatsappModelMessages(fullConv?.messages || []);
+    const history = toAnthropicMessages(modelMessages);
+    const imageCount = modelMessages.filter((msg) => msg.image_url).length;
+    console.log(
+      `[whatsapp] ${waMessageId}: enviando ${history.length} mensajes de historial ` +
+        `(${imageCount} imagenes) al modelo`
+    );
 
     const modelStartedAt = Date.now();
     const result = await runConversation({
