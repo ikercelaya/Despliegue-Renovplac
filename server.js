@@ -26,6 +26,7 @@ const COMPANY_EMAIL = "contacto@renoveplac.com";
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
 const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 12);
 const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 1);
+const WHATSAPP_MAX_TOKENS = Number(process.env.WHATSAPP_MAX_TOKENS || 520);
 const WHATSAPP_FAST_GREETING_ENABLED = process.env.WHATSAPP_FAST_GREETING_ENABLED !== "0";
 const MIN_BUDGET_AMOUNT_EUR = 600;
 const ACCEPT_BUDGET_REGEX = /^\s*(acepto|si\s+acepto|s[ií]\s+acepto|quiero\s+aceptar|aceptar)\b/i;
@@ -300,6 +301,59 @@ function getFastWhatsappGreetingReply(message, conv) {
   const priorUserMessages = (conv?.messages || []).filter((msg) => msg.role === "user").length;
   if (priorUserMessages > 0) return "";
   return "Hola, soy Renovebot, de Renoveplac. Cuentame que reforma tienes en mente y en que zona seria.";
+}
+
+function getFirstName(conv) {
+  return String(conv?.customer_name || "").trim().split(/\s+/)[0] || "";
+}
+
+function getLastAssistantText(messages) {
+  if (!Array.isArray(messages)) return "";
+  const lastAssistant = [...messages].reverse().find((msg) => msg.role === "assistant");
+  return String(lastAssistant?.content || "");
+}
+
+function isSimpleWhatsappPing(message) {
+  const text = normalizeLooseText(message).replace(/[^a-z0-9\s]/g, "").trim();
+  return /^(hola|buenas|buenos dias|buenas tardes|buenas noches|hello|hi|sigo por aqui|estas ahi|hay alguien)$/.test(text);
+}
+
+function getFastWhatsappPendingReply(message, conv) {
+  if (!WHATSAPP_FAST_GREETING_ENABLED || !isSimpleWhatsappPing(message)) return "";
+
+  const lastAssistant = getLastAssistantText(conv?.messages || []);
+  const pending = normalizeLooseText(lastAssistant);
+  if (!pending) return "";
+
+  const firstName = getFirstName(conv);
+  const greeting = firstName ? `Hola ${firstName}.` : "Hola.";
+
+  if (/\b(email|correo|e-mail|enlace|confirmacion|confirmar)\b/.test(pending)) {
+    return `${greeting}\n\nPara seguir necesito que confirmes el email desde el enlace que te he enviado. En cuanto lo abras, el presupuesto aparecera en el chat.`;
+  }
+  if (/\bfotos?\b|\bimagenes?\b|\badjunt/.test(pending)) {
+    return `${greeting}\n\nCuando puedas, enviame las fotos que te pedia para poder preparar el presupuesto con mas precision.`;
+  }
+  if (/\btelefono|movil|whatsapp|numero\b/.test(pending)) {
+    return `${greeting}\n\nPara seguir necesito tu telefono con 9 cifras, por ejemplo 612 345 678, o con prefijo +34.`;
+  }
+  if (/\bcodigo postal\b|\bcp\b/.test(pending)) {
+    return `${greeting}\n\nPara continuar necesito el codigo postal de la vivienda donde seria la reforma.`;
+  }
+  if (/\bnombre\b|\bcomo te llamas\b|\blocalice\b|\blocalizarte\b/.test(pending)) {
+    return `${greeting}\n\nPara dejar tus datos bien registrados necesito tu nombre completo.`;
+  }
+  if (/\bpropietari[oa]\b|\bduen[oa]\b|\bpermiso\b|\bautorizacion\b/.test(pending)) {
+    return `${greeting}\n\nAntes de prepararte presupuesto necesito confirmarte: eres propietario o tienes permiso del dueño para hacer la reforma?`;
+  }
+  if (/\bmedidas?\b|\bdimensiones?\b|\bmetros?\b|\bm2\b|\btamano\b/.test(pending)) {
+    return `${greeting}\n\nPara poder orientarte bien necesito las medidas aproximadas de la reforma. Si no las tienes exactas, dime una estimacion.`;
+  }
+  if (/\bacabado\b|\bcalidad\b|\bbasico\b|\bmedio\b|\balto\b/.test(pending)) {
+    return `${greeting}\n\nPara calcularlo mejor necesito saber que nivel de acabado buscas: basico, medio o alto.`;
+  }
+
+  return "";
 }
 
 function botRecentlyAskedForPhone(messages) {
@@ -1910,6 +1964,22 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
 
     if (conv.bot_enabled === false) return;
 
+    const fastPendingReply = getFastWhatsappPendingReply(userMessage, { ...conv, messages: previousMessages });
+    if (fastPendingReply) {
+      await supabase.from("bot_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: fastPendingReply,
+      });
+      const sendStartedAt = Date.now();
+      const sendResult = await wa.sendText(from, fastPendingReply);
+      console.log(
+        `[whatsapp] ${waMessageId}: recordatorio rapido enviado en ${Date.now() - sendStartedAt}ms ` +
+          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+      );
+      return;
+    }
+
     const fastGreetingReply = getFastWhatsappGreetingReply(userMessage, { ...conv, messages: previousMessages });
     if (fastGreetingReply) {
       await supabase.from("bot_messages").insert({
@@ -2014,6 +2084,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         }, "notify_human");
         return { ok: true };
       },
+      maxTokens: WHATSAPP_MAX_TOKENS,
     });
     console.log(`[whatsapp] ${waMessageId}: modelo listo en ${Date.now() - modelStartedAt}ms`);
 
