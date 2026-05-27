@@ -316,10 +316,75 @@
 
       .lead-card {
         background: #fff; border-bottom: 1px solid var(--line);
-        padding: 14px 22px;
+        font-size: 13.5px;
+      }
+      .lead-card summary {
+        list-style: none;
+        min-height: 46px;
+        padding: 10px 22px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .lead-card summary::-webkit-details-marker { display: none; }
+      .lead-card summary:hover { background: #fafbfc; }
+      .lead-summary-main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .lead-summary-title {
+        color: var(--navy);
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .lead-summary-meta {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .lead-pill {
+        max-width: 280px;
+        display: inline-block;
+        background: var(--bg);
+        border: 1px solid var(--line);
+        color: var(--text-soft);
+        border-radius: 999px;
+        padding: 3px 9px;
+        font-size: 12.5px;
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .lead-pill.empty { color: var(--muted); font-style: italic; }
+      .lead-toggle {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--brand-orange-hover);
+        font-size: 12.5px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .lead-toggle svg {
+        width: 15px;
+        height: 15px;
+        transition: transform 0.18s;
+      }
+      .lead-card[open] .lead-toggle svg { transform: rotate(180deg); }
+      .lead-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-        gap: 14px 24px; font-size: 13.5px;
+        gap: 12px 24px;
+        padding: 0 22px 14px;
       }
       .lead-card .field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
       .lead-card .field.email { grid-column: span 2; }
@@ -339,6 +404,7 @@
 
       @media (max-width: 980px) {
         .lead-card .field.email { grid-column: 1 / -1; }
+        .lead-pill { max-width: 220px; }
       }
 
       .messages-pane { flex: 1; overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 8px; }
@@ -526,11 +592,37 @@
           justify-content: center;
           padding: 8px 10px;
         }
-        .lead-card {
-          padding: 12px;
+        .lead-card summary {
+          min-height: 44px;
+          padding: 9px 12px;
+          align-items: flex-start;
+        }
+        .lead-summary-main {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 5px;
+        }
+        .lead-summary-meta {
+          width: 100%;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        .lead-summary-meta::-webkit-scrollbar { display: none; }
+        .lead-pill {
+          flex: 0 0 auto;
+          max-width: min(56vw, 250px);
+          font-size: 12px;
+        }
+        .lead-toggle {
+          padding-top: 2px;
+          font-size: 12px;
+        }
+        .lead-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 12px;
-          max-height: 32svh;
+          gap: 10px 12px;
+          padding: 0 12px 10px;
+          max-height: 30svh;
           overflow-y: auto;
         }
         .lead-card .field.email { grid-column: 1 / -1; }
@@ -596,11 +688,12 @@
           grid-template-columns: 1fr;
           margin-left: 0;
         }
-        .lead-card {
+        .lead-grid {
           grid-template-columns: 1fr;
-          max-height: 36svh;
+          max-height: 34svh;
         }
         .lead-card .field.email { grid-column: auto; }
+        .lead-pill { max-width: 66vw; }
         .bubble { max-width: 88%; }
       }
     </style>
@@ -950,6 +1043,8 @@
         const wasNearBottom = previousPane
           ? previousPane.scrollHeight - previousPane.scrollTop - previousPane.clientHeight < 90
           : true;
+        const previousLeadDetails = document.getElementById("leadDetails");
+        const leadDetailsOpen = wasSameConversation && previousLeadDetails && previousLeadDetails.open;
 
         const headerHtml =
           '<div class="conv-header">' +
@@ -986,16 +1081,37 @@
           { label: "Origen", value: sourceLabel(conv) },
           { label: "Creada", value: fmtDateTime(conv.created_at) },
         ];
+        const leadSummaryFields = [
+          { label: "Email", value: conv.customer_email },
+          { label: "Tel", value: conv.customer_phone },
+          { label: "CP", value: conv.customer_postal_code },
+        ];
         const leadHtml =
-          '<div class="lead-card">' +
-            leadFields.map((f) =>
-              '<div class="field ' + escapeHtml(f.cls || "") + '">' +
-                '<span class="field-label">' + escapeHtml(f.label) + '</span>' +
-                '<span class="field-value' + (f.value ? "" : " empty") + '">' + escapeHtml(f.value || "—") + '</span>' +
-              '</div>'
-            ).join("") +
-            (conv.initial_message ? '<div class="original-message"><strong>Mensaje original:</strong> ' + escapeHtml(conv.initial_message) + '</div>' : "") +
-          '</div>';
+          '<details class="lead-card" id="leadDetails"' + (leadDetailsOpen ? " open" : "") + '>' +
+            '<summary aria-label="Mostrar u ocultar datos del cliente">' +
+              '<div class="lead-summary-main">' +
+                '<span class="lead-summary-title">Datos del cliente</span>' +
+                '<span class="lead-summary-meta">' +
+                  leadSummaryFields.map((f) => {
+                    const value = f.value || "sin dato";
+                    return '<span class="lead-pill' + (f.value ? "" : " empty") + '" title="' + escapeHtml(value) + '">' +
+                      escapeHtml(f.label + ": " + value) +
+                    '</span>';
+                  }).join("") +
+                '</span>' +
+              '</div>' +
+              '<span class="lead-toggle">Ver datos <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>' +
+            '</summary>' +
+            '<div class="lead-grid">' +
+              leadFields.map((f) =>
+                '<div class="field ' + escapeHtml(f.cls || "") + '">' +
+                  '<span class="field-label">' + escapeHtml(f.label) + '</span>' +
+                  '<span class="field-value' + (f.value ? "" : " empty") + '">' + escapeHtml(f.value || "—") + '</span>' +
+                '</div>'
+              ).join("") +
+              (conv.initial_message ? '<div class="original-message"><strong>Mensaje original:</strong> ' + escapeHtml(conv.initial_message) + '</div>' : "") +
+            '</div>' +
+          '</details>';
 
         const items = [];
         (conv.messages || []).forEach((m) => items.push({ kind: "msg", at: m.created_at, data: m }));
