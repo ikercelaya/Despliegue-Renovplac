@@ -23,6 +23,7 @@ const PUBLIC_URL = getPublicUrl();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
+const HUMAN_HANDOFF_EMAIL = process.env.HUMAN_HANDOFF_EMAIL || COMPANY_EMAIL;
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
 const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 12);
 const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 1);
@@ -464,6 +465,36 @@ function ownerPermissionDeniedMessage() {
     "Lo entiendo. En ese caso no puedo prepararte un presupuesto, porque necesitamos que seas propietario " +
     "o tengas permiso del dueño para valorar la reforma.\n\n" +
     "Si más adelante tienes esa autorización, estaré encantado de ayudarte con el presupuesto."
+  );
+}
+
+function isHumanHandoffRequest(message) {
+  const text = normalizeLooseText(message);
+  if (!text) return false;
+
+  return (
+    /\b(quiero|necesito|prefiero|puedo|podria|me gustaria|quisiera)\b.{0,45}\b(hablar|contactar|contacto|tratar|atender|atienda|llamar|llamada|llame|escribir|escriba)\b.{0,45}\b(luis|persona|humano|empleado|asesor|comercial|tecnico|equipo|alguien)\b/.test(text) ||
+    /\b(hablar|contactar|contacto|tratar|atender|atienda|pasame|pasar|derivar|llamar|llamame|llame|llamada|escribir|escriba)\b.{0,45}\b(luis|persona|humano|empleado|asesor|comercial|tecnico|equipo|alguien)\b/.test(text) ||
+    /\b(luis|persona|humano|empleado|asesor|comercial|tecnico|equipo|alguien)\b.{0,45}\b(hable|hablar|contacte|contactar|llame|llamar|atienda|atender|escriba|escribir)\b/.test(text) ||
+    /\b(persona real|agente humano|atencion humana|operador|empleado)\b/.test(text)
+  );
+}
+
+function buildHumanHandoffOfferMessage(conv) {
+  const firstName = getFirstName(conv);
+  const prefix = firstName ? `Entendido, ${firstName}. ` : "Entendido. ";
+  return (
+    prefix +
+    "Si quieres que Luis revise esta conversacion, pulsa el boton \"Hablar con un humano\" y le avisare al equipo para que pueda responderte desde aqui."
+  );
+}
+
+function buildHumanHandoffConfirmedMessage(conv) {
+  const firstName = getFirstName(conv);
+  const prefix = firstName ? `Perfecto, ${firstName}. ` : "Perfecto. ";
+  return (
+    prefix +
+    "He avisado a Luis, de Renoveplac. El bot queda pausado para que una persona del equipo pueda revisar esta conversacion y responderte lo antes posible."
   );
 }
 
@@ -1060,6 +1091,75 @@ async function safeSendEmail(payload, label) {
 
 // ---------- Páginas ----------
 
+function formatMessageForEmail(msg) {
+  const role = msg?.role === "user" ? "Cliente" : msg?.role === "admin" ? "Renoveplac" : "Renovebot";
+  const content = String(msg?.content || msg?.image_url || "").trim();
+  return `${role}: ${content || "(sin texto)"}`.slice(0, 1200);
+}
+
+function buildHumanHandoffEmail(conv, reason) {
+  const adminUrl = `${PUBLIC_URL}/admin#${conv.id}`;
+  const lastMessages = (conv.messages || []).slice(-8).map(formatMessageForEmail).join("\n");
+  const source = conv.channel === "whatsapp" ? "WhatsApp" : conv.source === "form" ? "Formulario web" : "Chat web";
+
+  return [
+    "Un cliente ha solicitado hablar con una persona del equipo.",
+    "",
+    `Motivo detectado: ${reason || "Solicitud de atencion humana"}`,
+    `Canal: ${source}`,
+    "",
+    "Datos del cliente:",
+    `- Nombre: ${conv.customer_name || "(sin nombre)"}`,
+    `- Email: ${conv.customer_email || "(sin email)"}`,
+    `- Telefono: ${conv.customer_phone || "(sin telefono)"}`,
+    `- Codigo postal: ${conv.customer_postal_code || "(sin CP)"}`,
+    `- Tipo de obra: ${conv.work_type || "(no especificado)"}`,
+    "",
+    "Enlace directo al chat:",
+    adminUrl,
+    "",
+    "Ultimos mensajes:",
+    lastMessages || "(sin mensajes)",
+  ].join("\n");
+}
+
+async function requestHumanHandoff(conv, options = {}) {
+  const reason = options.reason || "El cliente pide hablar con una persona";
+  const text = buildHumanHandoffEmail(conv, reason);
+  const sendResult = await safeSendEmail({
+    to: HUMAN_HANDOFF_EMAIL,
+    replyTo: conv.customer_email || undefined,
+    subject: `Cliente solicita humano - ${conv.customer_name || conv.customer_phone || "lead Renoveplac"}`,
+    text,
+  }, "human_handoff");
+
+  if (sendResult?.error || sendResult?.mocked) {
+    const err = new Error(sendResult?.error || "Email no configurado");
+    err.status = 503;
+    throw err;
+  }
+
+  const { error: pauseError } = await supabase
+    .from("bot_conversations")
+    .update({ bot_enabled: false })
+    .eq("id", conv.id);
+  if (pauseError) throw pauseError;
+
+  const reply = buildHumanHandoffConfirmedMessage(conv);
+  const { data: assistantMsgRow, error: msgError } = await supabase
+    .from("bot_messages")
+    .insert({
+      conversation_id: conv.id,
+      role: "assistant",
+      content: reply,
+    })
+    .select()
+    .single();
+  if (msgError) throw msgError;
+
+  return { assistantMsgRow, reply };
+}
+
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 app.get("/admin", (_req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
 
@@ -1192,6 +1292,30 @@ app.post("/api/form", async (req, res) => {
 
 // ---------- Chat público ----------
 
+app.post("/api/human-handoff", async (req, res) => {
+  try {
+    const { conversationId, token, reason } = req.body || {};
+    const conv = conversationId ? await loadConversation(conversationId) : await loadByToken(token);
+    if (!conv) return res.status(404).json({ error: "Conversacion no encontrada." });
+    if (conv.status === "closed") return res.status(403).json({ error: "Esta conversacion esta cerrada." });
+
+    const result = await requestHumanHandoff(conv, { reason });
+    return res.json({
+      ok: true,
+      botEnabled: false,
+      reply: result.reply,
+      assistantMessage: result.assistantMsgRow,
+    });
+  } catch (err) {
+    console.error("[human-handoff]", err);
+    return res.status(err.status || 500).json({
+      error: err.status === 503
+        ? "No se pudo enviar el aviso por email. Revisa la configuracion de Resend."
+        : "No se pudo avisar al equipo.",
+    });
+  }
+});
+
 app.post("/api/chat", async (req, res) => {
   try {
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -1309,6 +1433,31 @@ app.post("/api/chat", async (req, res) => {
     }
 
     await updateLeadData(conv, leadPatch);
+
+    if (conv.bot_enabled !== false && isHumanHandoffRequest(userMessage)) {
+      botReply = buildHumanHandoffOfferMessage(conv);
+      const { data } = await supabase
+        .from("bot_messages")
+        .insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: botReply,
+        })
+        .select()
+        .single();
+      assistantMsgRow = data;
+
+      return res.json({
+        reply: botReply,
+        conversationId: conv.id,
+        accessToken: conv.access_token,
+        botEnabled: true,
+        budget: null,
+        humanHandoffOffered: true,
+        userMessage: userMsgRow,
+        assistantMessage: assistantMsgRow,
+      });
+    }
 
     if (conv.bot_enabled !== false) {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
@@ -1963,6 +2112,31 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     await updateLeadData(conv, leadPatch);
 
     if (conv.bot_enabled === false) return;
+
+    if (isHumanHandoffRequest(userMessage)) {
+      try {
+        const result = await requestHumanHandoff(
+          { ...conv, messages: messagesWithCurrent },
+          { reason: "El cliente pide hablar con una persona por WhatsApp" }
+        );
+        const sendStartedAt = Date.now();
+        const sendResult = await wa.sendText(from, result.reply);
+        console.log(
+          `[whatsapp] ${waMessageId}: humano avisado en ${Date.now() - sendStartedAt}ms ` +
+            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+        );
+      } catch (err) {
+        console.error("[whatsapp/human-handoff]", err);
+        const fallback = "Ahora mismo no he podido avisar al equipo automaticamente. Si puedes, intenta escribirnos de nuevo en unos minutos.";
+        await supabase.from("bot_messages").insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: fallback,
+        });
+        await wa.sendText(from, fallback);
+      }
+      return;
+    }
 
     const fastPendingReply = getFastWhatsappPendingReply(userMessage, { ...conv, messages: previousMessages });
     if (fastPendingReply) {

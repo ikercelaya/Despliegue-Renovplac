@@ -161,6 +161,36 @@
         border-radius: 4px;
         font-size: 12px;
       }
+      .handoff-card {
+        max-width: 92%;
+        margin: 0 0 12px;
+        padding: 12px;
+        background: #fff7ef;
+        border: 1px solid #ffd0a8;
+        border-radius: 10px;
+        box-shadow: 0 6px 18px rgba(20, 60, 50, 0.06);
+      }
+      .handoff-card p {
+        margin: 0 0 10px;
+        font-size: 14px;
+        line-height: 1.35;
+        color: #24332e;
+      }
+      .handoff-card button {
+        border: 0;
+        border-radius: 7px;
+        padding: 9px 14px;
+        background: #ff7821;
+        color: #fff;
+        font-weight: 800;
+        font-size: 14px;
+        cursor: pointer;
+        box-shadow: 0 3px 10px rgba(255, 120, 33, 0.25);
+      }
+      .handoff-card button:disabled {
+        opacity: 0.65;
+        cursor: wait;
+      }
       .typing { display: none; color: #5d6d66; font-size: 14px; padding: 0 16px 12px; background: #ffffff; }
       .typing.visible { display: block; }
       .message .msg-image {
@@ -544,6 +574,52 @@
         }
       }
 
+      function renderHumanHandoffButton(reason) {
+        const card = document.createElement("div");
+        card.className = "handoff-card";
+        card.innerHTML =
+          '<p>Si quieres que Luis revise esta conversacion ahora, pulsa el boton y le avisaremos al equipo.</p>' +
+          '<button type="button">Hablar con un humano</button>';
+        const btn = card.querySelector("button");
+        btn.addEventListener("click", () => requestHumanHandoff(btn, card, reason));
+        messagesEl.appendChild(card);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      async function requestHumanHandoff(btn, card, reason) {
+        btn.disabled = true;
+        btn.textContent = "Avisando...";
+        try {
+          const r = await fetch("/api/human-handoff", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conversationId,
+              token: accessToken,
+              reason: reason || "El cliente ha pulsado Hablar con un humano",
+            }),
+          });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.error || "No se pudo avisar");
+          if (data.botEnabled === false) {
+            chatStatus.textContent = "Te atiende el equipo de Renoveplac";
+          }
+          card.remove();
+          if (data.assistantMessage) {
+            renderMessage(data.assistantMessage);
+          } else if (data.reply) {
+            renderMessage({ role: "assistant", content: data.reply });
+          }
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = "Hablar con un humano";
+          renderMessage({
+            role: "assistant",
+            content: err.message || "No se pudo avisar al equipo en este momento.",
+          });
+        }
+      }
+
       function setLoading(isLoading) {
         typingEl.classList.toggle("visible", isLoading);
         setInputState(isLoading);
@@ -652,6 +728,9 @@
             renderMessage(data.assistantMessage);
           } else if (data.reply) {
             renderMessage({ role: "assistant", content: data.reply });
+          }
+          if (data.humanHandoffOffered) {
+            renderHumanHandoffButton("El cliente ha pedido hablar con una persona desde el chat web");
           }
         } catch (err) {
           renderMessage({
