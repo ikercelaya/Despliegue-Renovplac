@@ -298,6 +298,7 @@
         font-size: 12px; color: var(--text-soft); font-weight: 500;
       }
       .conv-actions { display: flex; gap: 8px; flex-shrink: 0; }
+      .conv-actions:empty { display: none; }
       .btn {
         background: #fff; color: var(--text);
         border: 1px solid var(--line-strong);
@@ -311,6 +312,7 @@
       .btn-warn:hover { background: var(--warn-soft); border-color: var(--warn); }
       .btn:disabled { opacity: 0.5; cursor: not-allowed; }
       .btn svg { width: 14px; height: 14px; }
+      .mobile-back { display: none; }
 
       .lead-card {
         background: #fff; border-bottom: 1px solid var(--line);
@@ -435,6 +437,172 @@
       .toast.error { background: var(--warn); }
       .toast.success { background: var(--success); }
       @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+      @media (max-width: 760px) {
+        html, body { overflow: hidden; }
+        body { font-size: 14px; }
+        .layout {
+          --sidebar-width: 100vw;
+          grid-template-columns: minmax(0, 1fr);
+          height: 100svh;
+          min-height: 100vh;
+        }
+        .sidebar-resizer { display: none; }
+        .sidebar { width: 100%; min-width: 0; border-right: 0; }
+        .layout .main { display: none; }
+        .layout.conversation-open .sidebar { display: none; }
+        .layout.conversation-open .main {
+          display: flex;
+          height: 100svh;
+          min-height: 0;
+        }
+        .sidebar-top { padding: 12px 14px; }
+        .brand-mark { width: 42px; height: 42px; }
+        .brand-text .name { font-size: 15px; }
+        .brand-text .role { font-size: 11px; }
+        .sidebar-search { padding: 10px 12px; }
+        .search-input input { min-height: 42px; font-size: 14px; }
+        .filters {
+          padding: 10px 12px;
+          gap: 8px;
+          scrollbar-width: none;
+        }
+        .filters::-webkit-scrollbar { display: none; }
+        .filter-chip { padding: 6px 11px; }
+        .conv-list li {
+          min-height: 76px;
+          padding: 14px 12px;
+        }
+        .conv-list li.active { padding-left: 9px; }
+        .conv-avatar { width: 42px; height: 42px; }
+        .conv-list .name { font-size: 14.5px; }
+        .conv-list .preview { font-size: 13px; }
+        .conv-delete {
+          width: 38px;
+          height: 38px;
+          margin-top: 0;
+        }
+        .empty { padding: 28px 18px; }
+        .conv-header {
+          padding: 10px 12px;
+          gap: 10px;
+          align-items: flex-start;
+          flex-wrap: wrap;
+        }
+        .mobile-back {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 40px;
+          height: 40px;
+          border: 1px solid var(--line);
+          border-radius: 10px;
+          background: var(--bg);
+          color: var(--navy);
+          cursor: pointer;
+          flex: 0 0 auto;
+        }
+        .mobile-back svg { width: 20px; height: 20px; }
+        .avatar-lg { width: 42px; height: 42px; font-size: 16px; }
+        .conv-header .info {
+          flex: 1 1 calc(100% - 102px);
+          min-width: 0;
+          padding-top: 1px;
+        }
+        .conv-header .info .title {
+          font-size: 16px;
+          overflow-wrap: anywhere;
+        }
+        .conv-header .info .chips { gap: 5px; }
+        .conv-actions {
+          flex: 1 0 100%;
+          margin-left: 50px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+        .btn {
+          min-height: 40px;
+          justify-content: center;
+          padding: 8px 10px;
+        }
+        .lead-card {
+          padding: 12px;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+          max-height: 32svh;
+          overflow-y: auto;
+        }
+        .lead-card .field.email { grid-column: 1 / -1; }
+        .lead-card .field.phone { min-width: 0; }
+        .lead-card .original-message { padding: 9px 12px; }
+        .messages-pane {
+          padding: 12px;
+          gap: 10px;
+        }
+        .msg-group { gap: 8px; }
+        .avatar-msg { width: 28px; height: 28px; }
+        .bubble {
+          max-width: min(82%, calc(100vw - 74px));
+          padding: 9px 12px;
+          font-size: 14px;
+        }
+        .budget-card {
+          max-width: calc(100vw - 34px);
+          margin-left: 0;
+          padding: 13px;
+        }
+        .budget-card .b-header {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+        .budget-card .amount { font-size: 22px; }
+        .budget-card .b-footer {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 8px;
+        }
+        .reply-zone {
+          padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+        }
+        .reply-status {
+          font-size: 12px;
+          align-items: flex-start;
+        }
+        .reply-form { gap: 8px; }
+        .reply-form textarea {
+          min-height: 48px;
+          max-height: 120px;
+          font-size: 16px;
+          resize: none;
+        }
+        .send-btn {
+          width: 50px;
+          min-width: 50px;
+          height: 50px;
+          padding: 0;
+          justify-content: center;
+          font-size: 0;
+        }
+        .send-btn svg { width: 19px; height: 19px; }
+        .reply-hint { display: none; }
+        .closed-banner { padding: 12px; font-size: 13px; }
+        .toast-stack { left: 12px; right: 12px; bottom: 12px; }
+        .toast { max-width: none; }
+      }
+
+      @media (max-width: 430px) {
+        .conv-actions {
+          grid-template-columns: 1fr;
+          margin-left: 0;
+        }
+        .lead-card {
+          grid-template-columns: 1fr;
+          max-height: 36svh;
+        }
+        .lead-card .field.email { grid-column: auto; }
+        .bubble { max-width: 88%; }
+      }
     </style>
   </head>
   <body>
@@ -568,6 +736,7 @@
       }
       function renderEmptyPane() {
         renderedConversationId = null;
+        appScreen.classList.remove("conversation-open");
         mainPane.innerHTML =
           '<div class="empty">' +
             '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
@@ -655,6 +824,7 @@
         localStorage.removeItem(TOKEN_KEY);
         clearInterval(pollTimer);
         appScreen.style.display = "none";
+        appScreen.classList.remove("conversation-open");
         loginScreen.style.display = "grid";
         activeId = null;
         pwdInput.value = "";
@@ -783,6 +953,9 @@
 
         const headerHtml =
           '<div class="conv-header">' +
+            '<button class="mobile-back" id="mobileBackBtn" type="button" aria-label="Volver al listado de conversaciones">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>' +
+            '</button>' +
             '<div class="avatar-lg">' + escapeHtml(initials(name)) + '</div>' +
             '<div class="info">' +
               '<div class="title">' + escapeHtml(name) + '</div>' +
@@ -853,6 +1026,7 @@
         mainPane.innerHTML = headerHtml + leadHtml +
           '<div class="messages-pane" id="messagesPane">' + messagesHtml + '</div>' +
           replyHtml;
+        appScreen.classList.add("conversation-open");
 
         const messagesPane = document.getElementById("messagesPane");
         if (messagesPane) {
@@ -863,6 +1037,14 @@
           }
         }
 
+        const mobileBackBtn = document.getElementById("mobileBackBtn");
+        if (mobileBackBtn) {
+          mobileBackBtn.addEventListener("click", () => {
+            activeId = null;
+            renderList();
+            renderEmptyPane();
+          });
+        }
         const toggleBtn = document.getElementById("toggleBotBtn");
         if (toggleBtn) toggleBtn.addEventListener("click", () => toggleBot(!botEnabled));
         const closeBtn = document.getElementById("closeBtn");
