@@ -207,7 +207,44 @@
       .search-input input::placeholder { color: #7888a8; }
       .search-input input:focus { outline: none; background: var(--navy-deep); border-color: var(--brand-orange); }
       .search-input svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: #7888a8; pointer-events: none; }
-      .filters { display: flex; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--navy-line); overflow-x: auto; }
+      .filters-shell {
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr) 30px;
+        align-items: center;
+        gap: 7px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--navy-line);
+        background: linear-gradient(180deg, var(--navy), var(--navy-deep));
+      }
+      .filters {
+        display: flex;
+        gap: 6px;
+        min-width: 0;
+        overflow-x: auto;
+        scroll-behavior: smooth;
+        scrollbar-width: none;
+      }
+      .filters::-webkit-scrollbar { display: none; }
+      .filter-nav {
+        width: 30px;
+        height: 30px;
+        border: 1px solid var(--navy-line);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.04);
+        color: #a9b7d6;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.08s, opacity 0.15s;
+      }
+      .filter-nav:hover:not(:disabled) {
+        background: var(--navy-soft);
+        border-color: rgba(255, 120, 33, 0.65);
+        color: #fff;
+      }
+      .filter-nav:active:not(:disabled) { transform: translateY(1px); }
+      .filter-nav:disabled { opacity: 0.32; cursor: default; }
+      .filter-nav svg { width: 15px; height: 15px; }
       .filter-chip {
         background: transparent; color: #c2cce0;
         border: 1px solid var(--navy-line);
@@ -528,12 +565,18 @@
         .brand-text .role { font-size: 11px; }
         .sidebar-search { padding: 10px 12px; }
         .search-input input { min-height: 42px; font-size: 14px; }
-        .filters {
+        .filters-shell {
+          grid-template-columns: 32px minmax(0, 1fr) 32px;
           padding: 10px 12px;
           gap: 8px;
-          scrollbar-width: none;
         }
-        .filters::-webkit-scrollbar { display: none; }
+        .filter-nav {
+          width: 32px;
+          height: 32px;
+        }
+        .filters {
+          gap: 8px;
+        }
         .filter-chip { padding: 6px 11px; }
         .conv-list li {
           min-height: 76px;
@@ -735,12 +778,20 @@
             <input id="searchInput" placeholder="Buscar nombre, email, zona..." />
           </div>
         </div>
-        <div class="filters" id="filters">
-          <button class="filter-chip active" data-filter="all">Todas <span class="count" id="count-all">0</span></button>
-          <button class="filter-chip" data-filter="active">Activas <span class="count" id="count-active">0</span></button>
-          <button class="filter-chip" data-filter="budget_sent">Presupuesto <span class="count" id="count-budget_sent">0</span></button>
-          <button class="filter-chip" data-filter="budget_accepted">Aceptado <span class="count" id="count-budget_accepted">0</span></button>
-          <button class="filter-chip" data-filter="closed">Cerradas <span class="count" id="count-closed">0</span></button>
+        <div class="filters-shell">
+          <button class="filter-nav" id="filterPrev" type="button" aria-label="Ver filtros anteriores">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <div class="filters" id="filters">
+            <button class="filter-chip active" data-filter="all">Todas <span class="count" id="count-all">0</span></button>
+            <button class="filter-chip" data-filter="active">Activas <span class="count" id="count-active">0</span></button>
+            <button class="filter-chip" data-filter="budget_sent">Presupuesto <span class="count" id="count-budget_sent">0</span></button>
+            <button class="filter-chip" data-filter="budget_accepted">Aceptado <span class="count" id="count-budget_accepted">0</span></button>
+            <button class="filter-chip" data-filter="closed">Cerradas <span class="count" id="count-closed">0</span></button>
+          </div>
+          <button class="filter-nav" id="filterNext" type="button" aria-label="Ver filtros siguientes">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+          </button>
         </div>
         <ul class="conv-list" id="convList"></ul>
       </aside>
@@ -777,6 +828,8 @@
       const logoutBtn = document.getElementById("logoutBtn");
       const searchInput = document.getElementById("searchInput");
       const filtersEl = document.getElementById("filters");
+      const filterPrevBtn = document.getElementById("filterPrev");
+      const filterNextBtn = document.getElementById("filterNext");
       const toastStack = document.getElementById("toastStack");
       const sidebarResizer = document.getElementById("sidebarResizer");
 
@@ -847,6 +900,19 @@
         el.textContent = msg;
         toastStack.appendChild(el);
         setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 0.2s"; setTimeout(() => el.remove(), 220); }, 3000);
+      }
+      function updateFilterScrollButtons() {
+        if (!filtersEl || !filterPrevBtn || !filterNextBtn) return;
+        const maxScroll = Math.max(0, filtersEl.scrollWidth - filtersEl.clientWidth);
+        const canScroll = maxScroll > 2;
+        filterPrevBtn.disabled = !canScroll || filtersEl.scrollLeft <= 2;
+        filterNextBtn.disabled = !canScroll || filtersEl.scrollLeft >= maxScroll - 2;
+      }
+      function scrollFilters(direction) {
+        if (!filtersEl) return;
+        const amount = Math.max(120, Math.floor(filtersEl.clientWidth * 0.75));
+        filtersEl.scrollBy({ left: direction * amount, behavior: "smooth" });
+        setTimeout(updateFilterScrollButtons, 220);
       }
       function clampSidebarWidth(width) {
         const maxByViewport = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.floor(window.innerWidth * 0.62)));
@@ -949,6 +1015,7 @@
         const counts = { all: allConversations.length, active: 0, budget_sent: 0, budget_accepted: 0, closed: 0 };
         allConversations.forEach((c) => { const s = c.status || "active"; if (counts[s] != null) counts[s]++; });
         Object.entries(counts).forEach(([k, v]) => { const el = document.getElementById("count-" + k); if (el) el.textContent = v; });
+        requestAnimationFrame(updateFilterScrollButtons);
       }
       function filterConversations() {
         return allConversations.filter((c) => {
@@ -1320,11 +1387,18 @@
         if (!btn) return;
         document.querySelectorAll(".filter-chip").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
+        btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
         activeFilter = btn.dataset.filter;
         renderList();
+        setTimeout(updateFilterScrollButtons, 220);
       });
+      if (filterPrevBtn) filterPrevBtn.addEventListener("click", () => scrollFilters(-1));
+      if (filterNextBtn) filterNextBtn.addEventListener("click", () => scrollFilters(1));
+      filtersEl.addEventListener("scroll", updateFilterScrollButtons, { passive: true });
+      window.addEventListener("resize", updateFilterScrollButtons);
       searchInput.addEventListener("input", (e) => { searchQuery = e.target.value.trim(); renderList(); });
       initSidebarResize();
+      requestAnimationFrame(updateFilterScrollButtons);
 
       function startApp() {
         loginScreen.style.display = "none";
