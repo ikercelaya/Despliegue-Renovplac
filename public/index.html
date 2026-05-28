@@ -656,6 +656,8 @@
             chatStatus.textContent = "Te atiende el equipo de Renoveplac";
           }
         } catch (err) {
+          conversationId = null;
+          if (!urlToken) accessToken = null;
           localStorage.removeItem(STORAGE_KEY);
           renderMessage({
             role: "assistant",
@@ -750,11 +752,20 @@
         try {
           const q = new URLSearchParams();
           if (conversationId) q.set("conversationId", conversationId);
-          else if (accessToken) q.set("token", accessToken);
+          if (accessToken) q.set("token", accessToken);
           if (lastMessageAt) q.set("since", lastMessageAt);
           const r = await fetch("/api/messages?" + q.toString());
-          if (!r.ok) return;
+          if (!r.ok) {
+            if (r.status === 404 && !accessToken) {
+              conversationId = null;
+              localStorage.removeItem(STORAGE_KEY);
+            }
+            return;
+          }
           const data = await r.json();
+          if (data.conversationId) conversationId = data.conversationId;
+          if (data.accessToken) accessToken = data.accessToken;
+          if (!urlToken && conversationId) localStorage.setItem(STORAGE_KEY, conversationId);
           (data.messages || []).forEach(renderMessage);
           (data.budgets || []).forEach(renderBudget);
           if (data.botEnabled === false) {

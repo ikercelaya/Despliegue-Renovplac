@@ -25,9 +25,9 @@ const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const HUMAN_HANDOFF_EMAIL = process.env.HUMAN_HANDOFF_EMAIL || COMPANY_EMAIL;
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
-const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 8);
-const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 1);
-const WHATSAPP_MAX_TOKENS = Number(process.env.WHATSAPP_MAX_TOKENS || 460);
+const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 6);
+const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 0);
+const WHATSAPP_MAX_TOKENS = Number(process.env.WHATSAPP_MAX_TOKENS || 420);
 const WHATSAPP_FAST_GREETING_ENABLED = process.env.WHATSAPP_FAST_GREETING_ENABLED !== "0";
 const MIN_BUDGET_AMOUNT_EUR = 600;
 const ACCEPT_BUDGET_REGEX = /^\s*(acepto|si\s+acepto|s[ií]\s+acepto|quiero\s+aceptar|aceptar)\b/i;
@@ -1745,14 +1745,21 @@ app.get("/api/messages", async (req, res) => {
     const { conversationId, token, since } = req.query;
     let conv = null;
     if (conversationId) conv = await loadConversation(String(conversationId));
-    else if (token) conv = await loadByToken(String(token));
+    if (!conv && token) conv = await loadByToken(String(token));
     if (!conv) return res.status(404).json({ error: "No encontrada." });
 
     let messages = conv.messages;
     if (since) messages = messages.filter((m) => m.created_at > since);
 
     const budgets = await fetchBudgets(conv.id);
-    return res.json({ messages, budgets, botEnabled: conv.bot_enabled, status: conv.status });
+    return res.json({
+      conversationId: conv.id,
+      accessToken: conv.access_token,
+      messages,
+      budgets,
+      botEnabled: conv.bot_enabled,
+      status: conv.status,
+    });
   } catch (err) {
     console.error("[messages]", err);
     return res.status(500).json({ error: "Error cargando mensajes." });
@@ -2035,7 +2042,7 @@ async function loadConversationByPhone(phone) {
     .limit(1);
   if (!data || data.length === 0) return null;
   const conv = data[0];
-  const messageLimit = Math.max(14, WHATSAPP_HISTORY_LIMIT + 6);
+  const messageLimit = Math.max(10, WHATSAPP_HISTORY_LIMIT + 4);
   const { data: msgs } = await supabase
     .from("bot_messages")
     .select("id, role, content, image_url, created_at")
@@ -2043,9 +2050,7 @@ async function loadConversationByPhone(phone) {
     .order("created_at", { ascending: false })
     .limit(messageLimit);
   const messages = (msgs || []).reverse();
-  const enriched = { ...conv, messages };
-  await updateLeadData(enriched, buildLeadPatchFromMessages(enriched, messages));
-  return enriched;
+  return { ...conv, messages };
 }
 
 async function acceptBudgetInternal(budgetId) {
