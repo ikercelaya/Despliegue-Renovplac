@@ -648,7 +648,7 @@
           if (emailConfirmed) {
             renderMessage({
               role: "assistant",
-              content: "Email confirmado. Ya puedes ver tu presupuesto orientativo en el chat.",
+              content: "Email confirmado. Ya puedes revisar tu presupuesto orientativo en el chat.\n\nSi te encaja, puedes aceptarlo pulsando el botón \"Aceptar presupuesto\" o escribiendo ACEPTO. Después Luis, de Renoveplac, se pondrá en contacto contigo para valorar los detalles y coordinar la visita técnica.",
             });
             window.history.replaceState({}, document.title, location.pathname + (urlToken ? "?t=" + encodeURIComponent(urlToken) : ""));
           }
