@@ -30,7 +30,7 @@
     ".rb-frame-wrap iframe{width:100%;height:100%;border:0;display:block;}" +
     "@keyframes rbFadeIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}" +
     "@keyframes rbPulse{0%{transform:scale(1);opacity:0.55;}100%{transform:scale(1.35);opacity:0;}}" +
-    "@media (max-width:520px){.rb-frame-wrap{position:fixed;right:0;bottom:0;left:0;top:0;width:100vw;height:100vh;border-radius:0;}.rb-root{right:14px;bottom:100px;}.rb-bubble-tip{max-width:200px;}}";
+    "@media (max-width:520px){.rb-root{right:14px;right:calc(14px + env(safe-area-inset-right));bottom:92px;bottom:calc(92px + env(safe-area-inset-bottom));}.rb-bubble-tip{max-width:200px;border-radius:8px;padding:10px 13px;}.rb-bubble-tip::after{display:none;}.rb-frame-wrap{position:fixed;right:0;bottom:0;left:0;top:0;width:100vw;width:100dvw;height:100vh;height:100dvh;border-radius:0;box-shadow:none;}.rb-root.rb-chat-open{inset:0;display:block;pointer-events:none;}.rb-root.rb-chat-open .rb-frame-wrap{pointer-events:auto;}.rb-root.rb-chat-open .rb-launcher-row{position:fixed;top:12px;top:calc(12px + env(safe-area-inset-top));right:12px;right:calc(12px + env(safe-area-inset-right));z-index:2147483002;pointer-events:auto;}.rb-root.rb-chat-open .rb-bubble-tip{display:none;}.rb-root.rb-chat-open .rb-launcher{width:44px !important;height:44px !important;min-width:44px !important;min-height:44px !important;background:rgba(20,60,50,0.9) !important;border:1px solid rgba(255,255,255,0.22) !important;box-shadow:0 8px 22px rgba(0,0,0,0.22) !important;}.rb-root.rb-chat-open .rb-launcher:hover{transform:none;}.rb-root.rb-chat-open .rb-launcher svg{width:24px !important;height:24px !important;}}";
   document.head.appendChild(style);
 
   var BOT_SVG = '<svg class="rb-icon-bot" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
@@ -77,13 +77,17 @@
       iframe.src = base + "/?t=" + encodeURIComponent(token);
     }
     wrap.classList.add("rb-open");
+    root.classList.add("rb-chat-open");
     btn.classList.add("rb-open-state");
     tip.classList.add("rb-hidden");
+    btn.setAttribute("aria-label", "Cerrar chat con Renovebot");
   }
   function closeChat() {
     wrap.classList.remove("rb-open");
+    root.classList.remove("rb-chat-open");
     btn.classList.remove("rb-open-state");
     tip.classList.remove("rb-hidden");
+    btn.setAttribute("aria-label", "Abrir chat con Renovebot");
   }
   function toggleChat() {
     if (wrap.classList.contains("rb-open")) closeChat();

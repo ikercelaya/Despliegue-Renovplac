@@ -2,23 +2,30 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Renovebot — Renoveplac</title>
     <style>
       * { box-sizing: border-box; }
+      html {
+        width: 100%;
+        height: 100%;
+      }
       body {
         margin: 0;
-        min-height: 100vh;
+        width: 100%;
+        min-height: var(--renovebot-app-height, 100dvh);
+        height: var(--renovebot-app-height, 100dvh);
         font-family: Arial, Helvetica, sans-serif;
         background: #f3f6f4;
         color: #17221d;
         display: grid;
         place-items: center;
         padding: 20px;
+        overflow: hidden;
       }
       .chat-widget {
         width: min(100%, 460px);
-        height: min(760px, calc(100vh - 40px));
+        height: min(760px, calc(var(--renovebot-app-height, 100dvh) - 40px));
         background: #ffffff;
         border: 1px solid #dfe8e2;
         border-radius: 8px;
@@ -26,6 +33,7 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
+        min-height: 0;
       }
       .chat-header {
         background: #143c32;
@@ -65,8 +73,11 @@
       .chat-status { margin: 3px 0 0; font-size: 13px; color: #cceedd; }
       .messages {
         flex: 1;
+        min-height: 0;
         padding: 18px 14px;
         overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
         background:
           linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)),
           repeating-linear-gradient(45deg, #e5eee8 0, #e5eee8 1px, transparent 1px, transparent 18px);
@@ -205,6 +216,7 @@
       .chat-form-wrap {
         border-top: 1px solid #e0e7e3;
         background: #ffffff;
+        flex: 0 0 auto;
       }
       .attach-preview {
         display: none;
@@ -287,8 +299,112 @@
       .send-button:disabled, .chat-input:disabled { opacity: 0.5; cursor: not-allowed; }
       .send-button:disabled { background: #a9d8bc; box-shadow: none; }
       @media (max-width: 520px) {
-        body { padding: 0; }
-        .chat-widget { width: 100%; height: 100vh; border-radius: 0; border: 0; }
+        html, body {
+          height: var(--renovebot-app-height, 100dvh);
+          min-height: var(--renovebot-app-height, 100dvh);
+        }
+        body {
+          padding: 0;
+          place-items: stretch;
+          background: #ffffff;
+        }
+        .chat-widget {
+          width: 100vw;
+          height: var(--renovebot-app-height, 100dvh);
+          max-height: none;
+          border-radius: 0;
+          border: 0;
+          box-shadow: none;
+        }
+        .chat-header {
+          padding: calc(12px + env(safe-area-inset-top)) 14px 12px;
+          gap: 10px;
+        }
+        .avatar {
+          width: 38px;
+          height: 38px;
+          font-size: 15px;
+        }
+        .chat-title { font-size: 16px; }
+        .chat-status {
+          font-size: 12px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .reset-button {
+          width: 38px;
+          height: 38px;
+        }
+        .messages {
+          padding: 14px 10px;
+        }
+        .message-row { margin-bottom: 10px; }
+        .message {
+          max-width: 88%;
+          padding: 10px 11px;
+          font-size: 15px;
+          line-height: 1.38;
+        }
+        .message .msg-image {
+          max-height: 220px;
+        }
+        .budget-card,
+        .handoff-card {
+          max-width: 100%;
+          margin-bottom: 10px;
+        }
+        .budget-card {
+          padding: 12px;
+        }
+        .budget-card .amount { font-size: 19px; }
+        .privacy-consent {
+          margin-bottom: 10px;
+          padding: 12px;
+        }
+        .privacy-actions {
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+        .privacy-actions button,
+        .handoff-card button,
+        .budget-card button {
+          min-height: 42px;
+        }
+        .typing {
+          padding: 0 12px 10px;
+          font-size: 13px;
+        }
+        .attach-preview {
+          padding: 8px 10px 0;
+          gap: 8px;
+        }
+        .attach-preview img {
+          width: 44px;
+          height: 44px;
+        }
+        .chat-form {
+          gap: 8px;
+          padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+        }
+        .attach-button {
+          width: 44px;
+          height: 44px;
+        }
+        .chat-input {
+          min-height: 44px;
+          padding: 10px 12px;
+          font-size: 16px;
+        }
+        .send-button {
+          width: 46px;
+          height: 46px;
+        }
+      }
+      @media (max-width: 360px) {
+        .message { max-width: 91%; }
+        .messages { padding-left: 8px; padding-right: 8px; }
+        .chat-form { padding-left: 8px; padding-right: 8px; }
       }
     </style>
   </head>
@@ -342,6 +458,22 @@
     </main>
 
     <script>
+      function updateAppHeight() {
+        const viewport = window.visualViewport;
+        const height = viewport ? viewport.height : window.innerHeight;
+        document.documentElement.style.setProperty(
+          "--renovebot-app-height",
+          Math.max(320, Math.round(height)) + "px"
+        );
+      }
+      updateAppHeight();
+      window.addEventListener("resize", updateAppHeight, { passive: true });
+      window.addEventListener("orientationchange", updateAppHeight, { passive: true });
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", updateAppHeight, { passive: true });
+        window.visualViewport.addEventListener("scroll", updateAppHeight, { passive: true });
+      }
+
       const messagesEl = document.getElementById("messages");
       const typingEl = document.getElementById("typing");
       const chatForm = document.getElementById("chatForm");
@@ -373,6 +505,10 @@
 
       const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
       const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
+
+      function shouldAutoFocusInput() {
+        return !window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
+      }
 
       function formatBytes(n) {
         if (n < 1024) return n + " B";
@@ -439,7 +575,7 @@
         messageInput.disabled = disabled;
         sendButton.disabled = disabled;
         attachButton.disabled = disabled;
-        if (!disabled) messageInput.focus();
+        if (!disabled && shouldAutoFocusInput()) messageInput.focus();
       }
 
       function closeChatFromPrivacy() {
