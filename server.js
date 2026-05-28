@@ -527,6 +527,40 @@ function buildMissingBudgetContactReply(conv) {
   ].join("\n");
 }
 
+function buildFastWhatsappImageReply(conv, caption) {
+  const firstName = getFirstName(conv);
+  const prefix = firstName ? `Perfecto, ${firstName}. ` : "Perfecto. ";
+  const received = caption
+    ? "He recibido la foto y el dato que me indicas."
+    : "He recibido la foto.";
+  const saved = "La guardo para que el equipo la revise en el panel.";
+  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
+
+  if (permissionStatus === "denied") return ownerPermissionDeniedMessage();
+
+  if (permissionStatus !== "confirmed") {
+    return (
+      `${prefix}${received} ${saved}\n\n` +
+      "Antes de prepararte presupuesto necesito confirmarte: eres propietario o tienes permiso del dueno para hacer la reforma?"
+    );
+  }
+
+  const contactReply = buildMissingBudgetContactReply(conv);
+  if (contactReply) {
+    return `${prefix}${received} ${saved}\n\n${contactReply}`;
+  }
+
+  const lastAssistant = normalizeLooseText(getLastAssistantText(conv?.messages || []));
+  if (/\b(plazo|urgencia|fecha|cuando)\b/.test(lastAssistant)) {
+    return `${prefix}${received} ${saved}\n\nTambien necesito que me indiques el plazo o urgencia que tienes para hacer la obra.`;
+  }
+
+  return (
+    `${prefix}${received} ${saved}\n\n` +
+    "Si falta algun detalle importante, dimelo ahora. Si no, puedo seguir preparando el presupuesto orientativo."
+  );
+}
+
 function looksLikeInlineBudgetReply(text) {
   const raw = String(text || "");
   if (!raw.trim()) return false;
@@ -2116,6 +2150,32 @@ async function loadConversationByPhone(phone) {
   return { ...conv, messages };
 }
 
+async function saveWhatsappImageForAdmin({ mediaId, conversationId, messageId, fallbackMime }) {
+  if (!mediaId || !conversationId || !messageId) return null;
+  try {
+    const dl = await wa.downloadMedia(mediaId);
+    const mimeType = String(dl.mimeType || fallbackMime || "image/jpeg");
+    const ext = (mimeType.split("/")[1] || "jpg").replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
+    const fileName = `${conversationId}/${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext}`;
+    const { error: upErr } = await supabase.storage
+      .from("chat-images")
+      .upload(fileName, dl.buffer, { contentType: mimeType, upsert: false });
+    if (upErr) throw upErr;
+
+    const { data: pub } = supabase.storage.from("chat-images").getPublicUrl(fileName);
+    const imageUrl = pub.publicUrl;
+    const { error: updateErr } = await supabase
+      .from("bot_messages")
+      .update({ image_url: imageUrl })
+      .eq("id", messageId);
+    if (updateErr) throw updateErr;
+    return imageUrl;
+  } catch (err) {
+    console.warn("[whatsapp] imagen guardada solo como texto; no se pudo subir al panel:", err.message);
+    return null;
+  }
+}
+
 async function acceptBudgetInternal(budgetId) {
   await supabase
     .from("bot_budgets")
@@ -2205,21 +2265,15 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     wa.markAsRead(wamsg.id);
 
     let userMessage = "";
-    let imageBuffer = null;
+    let imageMediaId = null;
     let imageMime = null;
 
     if (msgType === "text") {
       userMessage = wamsg.text?.body || "";
     } else if (msgType === "image") {
-      try {
-        const dl = await wa.downloadMedia(wamsg.image.id);
-        imageBuffer = dl.buffer;
-        imageMime = dl.mimeType;
-        userMessage = wamsg.image?.caption || "";
-      } catch (err) {
-        console.error("[whatsapp] error descargando imagen:", err.message);
-        userMessage = wamsg.image?.caption || "(imagen no procesable)";
-      }
+      imageMediaId = wamsg.image?.id || null;
+      imageMime = wamsg.image?.mime_type || null;
+      userMessage = wamsg.image?.caption || "";
     } else {
       userMessage = `(tipo de mensaje no soportado: ${msgType})`;
     }
@@ -2245,19 +2299,6 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     if (conv.status === "closed") return;
 
     let imageUrl = null;
-    if (imageBuffer) {
-      const ext = (imageMime.split("/")[1] || "jpg").replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
-      const fileName = `${conv.id}/${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext}`;
-      const { error: upErr } = await supabase.storage
-        .from("chat-images")
-        .upload(fileName, imageBuffer, { contentType: imageMime, upsert: false });
-      if (!upErr) {
-        const { data: pub } = supabase.storage.from("chat-images").getPublicUrl(fileName);
-        imageUrl = pub.publicUrl;
-      } else {
-        console.warn("[whatsapp] error subiendo imagen:", upErr.message);
-      }
-    }
 
     if (ACCEPT_BUDGET_REGEX.test(userMessage)) {
       const pending = await fetchLatestPendingBudget(conv.id);
@@ -2303,10 +2344,14 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     }
 
     const previousMessages = conv.messages || [];
+    const storedUserContent =
+      msgType === "image"
+        ? (userMessage || "(imagen recibida)")
+        : (userMessage || (imageUrl ? "(imagen)" : ""));
     const { data: userMsgRow, error: userMsgError } = await supabase.from("bot_messages").insert({
       conversation_id: conv.id,
       role: "user",
-      content: userMessage || (imageUrl ? "(imagen)" : ""),
+      content: storedUserContent,
       image_url: imageUrl,
     })
       .select("id, role, content, image_url, created_at")
@@ -2316,10 +2361,46 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       ...previousMessages,
       userMsgRow || {
         role: "user",
-        content: userMessage || (imageUrl ? "(imagen)" : ""),
+        content: storedUserContent,
         image_url: imageUrl,
       },
     ];
+
+    if (msgType === "image") {
+      const leadPatch = buildLeadPatch(conv, userMessage, messagesWithCurrent);
+      await updateLeadData(conv, leadPatch);
+
+      if (conv.bot_enabled !== false) {
+        const imageReply = buildFastWhatsappImageReply(
+          { ...conv, messages: messagesWithCurrent },
+          userMessage
+        );
+        await supabase.from("bot_messages").insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: imageReply,
+        });
+        const sendStartedAt = Date.now();
+        const sendResult = await wa.sendText(from, imageReply);
+        console.log(
+          `[whatsapp] ${waMessageId}: imagen respondida sin modelo en ${Date.now() - sendStartedAt}ms ` +
+            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+        );
+      }
+
+      const uploadStartedAt = Date.now();
+      const savedImageUrl = await saveWhatsappImageForAdmin({
+        mediaId: imageMediaId,
+        conversationId: conv.id,
+        messageId: userMsgRow?.id,
+        fallbackMime: imageMime,
+      });
+      console.log(
+        `[whatsapp] ${waMessageId}: guardado de imagen para admin terminado en ${Date.now() - uploadStartedAt}ms ` +
+          `(ok=${!!savedImageUrl})`
+      );
+      return;
+    }
 
     if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, previousMessages)) {
       const reply = ownerPermissionDeniedMessage();
