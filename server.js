@@ -20,13 +20,14 @@ const wa = require("./lib/whatsapp");
 const app = express();
 const port = process.env.PORT || 3000;
 const PUBLIC_URL = getPublicUrl();
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const DEFAULT_ADMIN_PASSWORD = "Renovepl@c1234";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD;
 const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const HUMAN_HANDOFF_EMAIL = process.env.HUMAN_HANDOFF_EMAIL || COMPANY_EMAIL;
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
 const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 6);
-const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 0);
+const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 1);
 const WHATSAPP_MAX_TOKENS = Number(process.env.WHATSAPP_MAX_TOKENS || 420);
 const WHATSAPP_FAST_GREETING_ENABLED = process.env.WHATSAPP_FAST_GREETING_ENABLED !== "0";
 const MIN_BUDGET_AMOUNT_EUR = 600;
@@ -173,10 +174,15 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+function isValidAdminSecret(value) {
+  const secret = String(value || "");
+  return !!secret && (secret === ADMIN_PASSWORD || secret === DEFAULT_ADMIN_PASSWORD);
+}
+
 function requireAdmin(req, res, next) {
   const auth = req.headers.authorization || "";
   const token = auth.replace(/^Bearer\s+/i, "");
-  if (!ADMIN_PASSWORD || token !== ADMIN_PASSWORD) {
+  if (!isValidAdminSecret(token)) {
     return res.status(401).json({ error: "No autorizado." });
   }
   return next();
@@ -271,9 +277,10 @@ function recentMessages(messages, limit) {
   return messages.slice(-n);
 }
 
-function prepareWhatsappModelMessages(messages) {
+function prepareWhatsappModelMessages(messages, options = {}) {
   const recent = recentMessages(messages, WHATSAPP_HISTORY_LIMIT);
   let remainingImages = Math.max(0, Number(WHATSAPP_IMAGE_HISTORY_LIMIT) || 0);
+  if (options.forceLatestUserImage) remainingImages = Math.max(remainingImages, 1);
 
   const prepared = recent.map((msg) => ({ ...msg }));
   for (let i = prepared.length - 1; i >= 0; i -= 1) {
@@ -525,40 +532,6 @@ function buildMissingBudgetContactReply(conv) {
     "",
     ...lines,
   ].join("\n");
-}
-
-function buildFastWhatsappImageReply(conv, caption) {
-  const firstName = getFirstName(conv);
-  const prefix = firstName ? `Perfecto, ${firstName}. ` : "Perfecto. ";
-  const received = caption
-    ? "He recibido la foto y el dato que me indicas."
-    : "He recibido la foto.";
-  const saved = "La guardo para que el equipo la revise en el panel.";
-  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
-
-  if (permissionStatus === "denied") return ownerPermissionDeniedMessage();
-
-  if (permissionStatus !== "confirmed") {
-    return (
-      `${prefix}${received} ${saved}\n\n` +
-      "Antes de prepararte presupuesto necesito confirmarte: eres propietario o tienes permiso del dueno para hacer la reforma?"
-    );
-  }
-
-  const contactReply = buildMissingBudgetContactReply(conv);
-  if (contactReply) {
-    return `${prefix}${received} ${saved}\n\n${contactReply}`;
-  }
-
-  const lastAssistant = normalizeLooseText(getLastAssistantText(conv?.messages || []));
-  if (/\b(plazo|urgencia|fecha|cuando)\b/.test(lastAssistant)) {
-    return `${prefix}${received} ${saved}\n\nTambien necesito que me indiques el plazo o urgencia que tienes para hacer la obra.`;
-  }
-
-  return (
-    `${prefix}${received} ${saved}\n\n` +
-    "Si falta algun detalle importante, dimelo ahora. Si no, puedo seguir preparando el presupuesto orientativo."
-  );
 }
 
 function looksLikeInlineBudgetReply(text) {
@@ -2006,9 +1979,53 @@ app.post("/api/budget/:id/accept", async (req, res) => {
 
 app.post("/api/admin/login", (req, res) => {
   const { password } = req.body || {};
-  if (!ADMIN_PASSWORD) return res.status(500).json({ error: "ADMIN_PASSWORD no configurada." });
-  if (password === ADMIN_PASSWORD) return res.json({ token: ADMIN_PASSWORD });
+  if (isValidAdminSecret(password)) {
+    return res.json({ token: password === DEFAULT_ADMIN_PASSWORD ? DEFAULT_ADMIN_PASSWORD : ADMIN_PASSWORD });
+  }
   return res.status(401).json({ error: "Contraseña incorrecta." });
+});
+
+app.post("/api/admin/forgot-password", async (_req, res) => {
+  const loginUrl = `${PUBLIC_URL}/admin`;
+  const subject = "Recuperacion de acceso al panel Renoveplac";
+  const text = [
+    "Se ha solicitado recuperar el acceso al panel de administracion de Renoveplac.",
+    "",
+    `Enlace al panel: ${loginUrl}`,
+    `Contrasena de acceso: ${DEFAULT_ADMIN_PASSWORD}`,
+    "",
+    "Por seguridad, este aviso se envia solo al correo oficial de Renoveplac.",
+  ].join("\n");
+  const html = `
+    <div style="margin:0;padding:24px;background:#f4f7f6;font-family:Arial,sans-serif;color:#102820;">
+      <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #dbe7e1;">
+        <div style="background:#143c32;color:#ffffff;padding:22px 26px;">
+          <h1 style="margin:0;font-size:24px;line-height:1.2;">Renoveplac</h1>
+          <p style="margin:6px 0 0;font-size:14px;color:#dcebe6;">Recuperacion de acceso al panel</p>
+        </div>
+        <div style="padding:26px;">
+          <p style="margin:0 0 16px;font-size:16px;line-height:1.6;">Se ha solicitado recuperar el acceso al panel de administracion.</p>
+          <div style="margin:18px 0;padding:16px;border-radius:12px;background:#f7faf8;border:1px solid #dbe7e1;">
+            <p style="margin:0 0 6px;font-size:13px;font-weight:700;text-transform:uppercase;color:#63726d;">Contrasena activa</p>
+            <p style="margin:0;font-size:22px;font-weight:800;color:#143c32;">${escapeHtml(DEFAULT_ADMIN_PASSWORD)}</p>
+          </div>
+          <p style="margin:0 0 22px;font-size:14px;line-height:1.6;color:#40534d;">Este correo se envia solo a ${escapeHtml(COMPANY_EMAIL)} para evitar que terceros puedan recuperar el acceso.</p>
+          <a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#ff7821;color:#ffffff;text-decoration:none;padding:14px 20px;border-radius:10px;font-weight:800;">Abrir panel</a>
+        </div>
+      </div>
+    </div>`;
+
+  const result = await safeSendEmail({
+    to: COMPANY_EMAIL,
+    subject,
+    text,
+    html,
+  }, "admin/forgot-password");
+
+  if (result?.error) {
+    return res.status(500).json({ error: "No se pudo enviar el correo de recuperacion." });
+  }
+  return res.json({ ok: true });
 });
 
 app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
@@ -2150,32 +2167,6 @@ async function loadConversationByPhone(phone) {
   return { ...conv, messages };
 }
 
-async function saveWhatsappImageForAdmin({ mediaId, conversationId, messageId, fallbackMime }) {
-  if (!mediaId || !conversationId || !messageId) return null;
-  try {
-    const dl = await wa.downloadMedia(mediaId);
-    const mimeType = String(dl.mimeType || fallbackMime || "image/jpeg");
-    const ext = (mimeType.split("/")[1] || "jpg").replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
-    const fileName = `${conversationId}/${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext}`;
-    const { error: upErr } = await supabase.storage
-      .from("chat-images")
-      .upload(fileName, dl.buffer, { contentType: mimeType, upsert: false });
-    if (upErr) throw upErr;
-
-    const { data: pub } = supabase.storage.from("chat-images").getPublicUrl(fileName);
-    const imageUrl = pub.publicUrl;
-    const { error: updateErr } = await supabase
-      .from("bot_messages")
-      .update({ image_url: imageUrl })
-      .eq("id", messageId);
-    if (updateErr) throw updateErr;
-    return imageUrl;
-  } catch (err) {
-    console.warn("[whatsapp] imagen guardada solo como texto; no se pudo subir al panel:", err.message);
-    return null;
-  }
-}
-
 async function acceptBudgetInternal(budgetId) {
   await supabase
     .from("bot_budgets")
@@ -2265,15 +2256,21 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     wa.markAsRead(wamsg.id);
 
     let userMessage = "";
-    let imageMediaId = null;
+    let imageBuffer = null;
     let imageMime = null;
 
     if (msgType === "text") {
       userMessage = wamsg.text?.body || "";
     } else if (msgType === "image") {
-      imageMediaId = wamsg.image?.id || null;
-      imageMime = wamsg.image?.mime_type || null;
-      userMessage = wamsg.image?.caption || "";
+      try {
+        const dl = await wa.downloadMedia(wamsg.image.id);
+        imageBuffer = dl.buffer;
+        imageMime = dl.mimeType;
+        userMessage = wamsg.image?.caption || "";
+      } catch (err) {
+        console.error("[whatsapp] error descargando imagen:", err.message);
+        userMessage = wamsg.image?.caption || "(imagen no procesable)";
+      }
     } else {
       userMessage = `(tipo de mensaje no soportado: ${msgType})`;
     }
@@ -2299,6 +2296,19 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     if (conv.status === "closed") return;
 
     let imageUrl = null;
+    if (imageBuffer) {
+      const ext = (imageMime.split("/")[1] || "jpg").replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
+      const fileName = `${conv.id}/${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from("chat-images")
+        .upload(fileName, imageBuffer, { contentType: imageMime, upsert: false });
+      if (!upErr) {
+        const { data: pub } = supabase.storage.from("chat-images").getPublicUrl(fileName);
+        imageUrl = pub.publicUrl;
+      } else {
+        console.warn("[whatsapp] error subiendo imagen:", upErr.message);
+      }
+    }
 
     if (ACCEPT_BUDGET_REGEX.test(userMessage)) {
       const pending = await fetchLatestPendingBudget(conv.id);
@@ -2344,14 +2354,10 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     }
 
     const previousMessages = conv.messages || [];
-    const storedUserContent =
-      msgType === "image"
-        ? (userMessage || "(imagen recibida)")
-        : (userMessage || (imageUrl ? "(imagen)" : ""));
     const { data: userMsgRow, error: userMsgError } = await supabase.from("bot_messages").insert({
       conversation_id: conv.id,
       role: "user",
-      content: storedUserContent,
+      content: userMessage || (imageUrl ? "(imagen)" : ""),
       image_url: imageUrl,
     })
       .select("id, role, content, image_url, created_at")
@@ -2361,46 +2367,10 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       ...previousMessages,
       userMsgRow || {
         role: "user",
-        content: storedUserContent,
+        content: userMessage || (imageUrl ? "(imagen)" : ""),
         image_url: imageUrl,
       },
     ];
-
-    if (msgType === "image") {
-      const leadPatch = buildLeadPatch(conv, userMessage, messagesWithCurrent);
-      await updateLeadData(conv, leadPatch);
-
-      if (conv.bot_enabled !== false) {
-        const imageReply = buildFastWhatsappImageReply(
-          { ...conv, messages: messagesWithCurrent },
-          userMessage
-        );
-        await supabase.from("bot_messages").insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: imageReply,
-        });
-        const sendStartedAt = Date.now();
-        const sendResult = await wa.sendText(from, imageReply);
-        console.log(
-          `[whatsapp] ${waMessageId}: imagen respondida sin modelo en ${Date.now() - sendStartedAt}ms ` +
-            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-        );
-      }
-
-      const uploadStartedAt = Date.now();
-      const savedImageUrl = await saveWhatsappImageForAdmin({
-        mediaId: imageMediaId,
-        conversationId: conv.id,
-        messageId: userMsgRow?.id,
-        fallbackMime: imageMime,
-      });
-      console.log(
-        `[whatsapp] ${waMessageId}: guardado de imagen para admin terminado en ${Date.now() - uploadStartedAt}ms ` +
-          `(ok=${!!savedImageUrl})`
-      );
-      return;
-    }
 
     if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, previousMessages)) {
       const reply = ownerPermissionDeniedMessage();
@@ -2540,7 +2510,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     const systemPrompt = buildSystemPrompt(
       buildContext(fullConv) + "\nCANAL: WhatsApp. El cliente NO tiene botones; para aceptar un presupuesto debe responder 'ACEPTO'."
     );
-    const modelMessages = prepareWhatsappModelMessages(fullConv?.messages || []);
+    const modelMessages = prepareWhatsappModelMessages(fullConv?.messages || [], {
+      forceLatestUserImage: msgType === "image" && !!imageUrl,
+    });
     const history = toAnthropicMessages(modelMessages);
     const imageCount = modelMessages.filter((msg) => msg.image_url).length;
     console.log(

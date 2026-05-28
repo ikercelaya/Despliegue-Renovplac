@@ -122,6 +122,26 @@
         border-radius: 8px;
         text-align: center;
       }
+      .login-card .notice {
+        color: var(--success);
+        font-size: 13px;
+        background: var(--success-soft);
+        padding: 10px 12px;
+        border-radius: 8px;
+        text-align: center;
+      }
+      .login-card .forgot-btn {
+        background: #fff;
+        color: var(--navy);
+        border: 1px solid var(--line);
+        box-shadow: none;
+        margin-top: 0;
+      }
+      .login-card .forgot-btn:hover {
+        filter: none;
+        border-color: var(--brand-orange);
+        color: var(--brand-orange-hover);
+      }
 
       .layout {
         --sidebar-width: 340px;
@@ -754,7 +774,9 @@
           <label for="pwd">Contraseña de administrador</label>
           <input type="password" id="pwd" placeholder="Introduce la contraseña" required autofocus />
           <div class="err" id="loginErr" style="display:none"></div>
+          <div class="notice" id="forgotMsg" style="display:none"></div>
           <button type="submit">Entrar</button>
+          <button type="button" class="forgot-btn" id="forgotPasswordBtn">He olvidado mi contrase&ntilde;a</button>
         </form>
       </div>
     </div>
@@ -822,6 +844,8 @@
       const appScreen = document.getElementById("appScreen");
       const loginForm = document.getElementById("loginForm");
       const loginErr = document.getElementById("loginErr");
+      const forgotMsg = document.getElementById("forgotMsg");
+      const forgotPasswordBtn = document.getElementById("forgotPasswordBtn");
       const pwdInput = document.getElementById("pwd");
       const convList = document.getElementById("convList");
       const mainPane = document.getElementById("mainPane");
@@ -977,6 +1001,16 @@
         const data = await r.json();
         token = data.token;
         localStorage.setItem(TOKEN_KEY, token);
+      }
+      async function requestPasswordRecovery() {
+        const r = await fetch("/api/admin/forgot-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.error || "No se pudo enviar el correo de recuperacion.");
+        }
       }
       function logout() {
         token = null;
@@ -1419,9 +1453,33 @@
         e.preventDefault();
         loginErr.style.display = "none";
         loginErr.textContent = "";
+        forgotMsg.style.display = "none";
+        forgotMsg.textContent = "";
         try { await login(pwdInput.value); startApp(); }
         catch (err) { loginErr.textContent = err.message; loginErr.style.display = "block"; }
       });
+      if (forgotPasswordBtn) {
+        forgotPasswordBtn.addEventListener("click", async () => {
+          loginErr.style.display = "none";
+          loginErr.textContent = "";
+          forgotMsg.style.display = "none";
+          forgotMsg.textContent = "";
+          forgotPasswordBtn.disabled = true;
+          const previousText = forgotPasswordBtn.textContent;
+          forgotPasswordBtn.textContent = "Enviando...";
+          try {
+            await requestPasswordRecovery();
+            forgotMsg.textContent = "Te hemos enviado las instrucciones a contacto@renoveplac.com.";
+            forgotMsg.style.display = "block";
+          } catch (err) {
+            loginErr.textContent = err.message;
+            loginErr.style.display = "block";
+          } finally {
+            forgotPasswordBtn.disabled = false;
+            forgotPasswordBtn.textContent = previousText;
+          }
+        });
+      }
       logoutBtn.addEventListener("click", logout);
 
       if (token) startApp();
