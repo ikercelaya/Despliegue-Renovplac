@@ -498,6 +498,60 @@ function buildHumanHandoffConfirmedMessage(conv) {
   );
 }
 
+function getMissingBudgetContactFields(conv) {
+  const missing = [];
+  const compactPhone = String(conv?.customer_phone || "").replace(/\s+/g, "");
+  const validPhone = normalizeSpanishPhone(compactPhone) || /^34[6-9]\d{8}$/.test(compactPhone);
+  if (!conv?.customer_name || isLikelyInvalidCustomerName(conv.customer_name)) missing.push("nombre completo");
+  if (!validPhone) missing.push("telefono");
+  if (!normalizeEmail(conv?.customer_email)) missing.push("email");
+  if (!/^\d{5}$/.test(String(conv?.customer_postal_code || "").trim())) missing.push("codigo postal");
+  return missing;
+}
+
+function buildMissingBudgetContactReply(conv) {
+  const missing = getMissingBudgetContactFields(conv);
+  if (!missing.length) return "";
+
+  const labels = {
+    "nombre completo": "Nombre",
+    telefono: "Telefono",
+    email: "Email",
+    "codigo postal": "Codigo postal",
+  };
+  const lines = missing.map((field) => `${labels[field] || field}: ...`);
+  return [
+    "Estupendo. Para prepararte el presupuesto orientativo necesito completar tus datos de contacto.",
+    "",
+    ...lines,
+  ].join("\n");
+}
+
+function looksLikeInlineBudgetReply(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return false;
+  const normalized = normalizeLooseText(raw);
+  const hasBudgetLanguage = /\b(presupuesto|importe|precio|coste|estaria|seria|saldria|incluye|incluiria)\b/.test(normalized);
+  const hasEuroAmount = /(?:\d{1,3}(?:[.\s]\d{3})+|\d{3,6})(?:[,.]\d{1,2})?\s*(?:€|eur|euros?)\b/i.test(raw);
+  return hasBudgetLanguage && hasEuroAmount;
+}
+
+function buildPreBudgetGuardReply(conv) {
+  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
+  if (permissionStatus === "denied") return ownerPermissionDeniedMessage();
+  if (permissionStatus !== "confirmed") {
+    return "Antes de prepararte presupuesto necesito confirmarte: eres propietario o tienes permiso del dueño para hacer la reforma?";
+  }
+
+  const contactReply = buildMissingBudgetContactReply(conv);
+  if (contactReply) return contactReply;
+
+  return (
+    "Ya tengo la informacion principal. Para mostrarte el presupuesto orientativo necesito generarlo correctamente " +
+    "y enviarte primero el enlace de confirmacion al email. Dame un ultimo detalle si falta alguno y lo preparo."
+  );
+}
+
 function assertBudgetCanBeCreated(input, conv) {
   const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
   if (permissionStatus === "denied") {
@@ -508,6 +562,13 @@ function assertBudgetCanBeCreated(input, conv) {
   if (permissionStatus !== "confirmed") {
     throw new Error(
       "Antes de crear el presupuesto debes preguntar: ¿Eres propietario o tienes permiso del dueño para hacer la reforma?"
+    );
+  }
+
+  const missingContact = getMissingBudgetContactFields(conv);
+  if (missingContact.length) {
+    throw new Error(
+      `Antes de crear el presupuesto debes pedir estos datos de contacto en un unico mensaje: ${missingContact.join(", ")}.`
     );
   }
 
@@ -1675,6 +1736,8 @@ app.post("/api/chat", async (req, res) => {
         } else {
           botReply = addBudgetAcceptanceHint(botReply, true);
         }
+      } else if (looksLikeInlineBudgetReply(botReply)) {
+        botReply = buildPreBudgetGuardReply(conv);
       }
 
       if (botReply) {
@@ -2483,6 +2546,8 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           `Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.`;
         botReply = (botReply ? botReply + "\n" : "") + card;
       }
+    } else if (looksLikeInlineBudgetReply(botReply)) {
+      botReply = buildPreBudgetGuardReply(fullConv);
     }
 
     if (botReply) {
