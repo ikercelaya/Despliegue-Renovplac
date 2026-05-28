@@ -25,9 +25,9 @@ const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
 const HUMAN_HANDOFF_EMAIL = process.env.HUMAN_HANDOFF_EMAIL || COMPANY_EMAIL;
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
-const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 12);
+const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 8);
 const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 1);
-const WHATSAPP_MAX_TOKENS = Number(process.env.WHATSAPP_MAX_TOKENS || 520);
+const WHATSAPP_MAX_TOKENS = Number(process.env.WHATSAPP_MAX_TOKENS || 460);
 const WHATSAPP_FAST_GREETING_ENABLED = process.env.WHATSAPP_FAST_GREETING_ENABLED !== "0";
 const MIN_BUDGET_AMOUNT_EUR = 600;
 const ACCEPT_BUDGET_REGEX = /^\s*(acepto|si\s+acepto|s[ií]\s+acepto|quiero\s+aceptar|aceptar)\b/i;
@@ -916,21 +916,121 @@ async function rollbackBudgetCreation(budget, conv) {
     .eq("id", conv.id);
 }
 
-function buildBudgetConfirmationMessage(confirmation) {
+function buildBudgetConfirmationMessage(confirmation, channel) {
   const email = confirmation?.email || "tu email";
   const countLine = confirmation?.requestCount
     ? `\n\nSolicitudes registradas con este email: ${confirmation.requestCount}.`
     : "";
+  const deliveryLine = channel === "whatsapp"
+    ? "\n\nAbre ese enlace desde tu correo y te enviaré el presupuesto por este mismo WhatsApp."
+    : "\n\nAbre ese enlace desde tu correo y el presupuesto aparecerá en este chat.";
   return (
     `Te he preparado el presupuesto orientativo. Para mostrártelo, te he enviado un enlace de confirmación a ${email}.` +
-    "\n\nAbre ese enlace desde tu correo y el presupuesto aparecerá en este chat." +
+    deliveryLine +
     countLine
   );
 }
 
 function buildEmailConfirmationRequiredMessage(confirmation) {
   const email = confirmation?.email || "tu email";
-  return `Antes de aceptar o ver el presupuesto, confirma el enlace que te he enviado a ${email}.`;
+  return (
+    `Antes de aceptar o ver el presupuesto, confirma el enlace que te he enviado a ${email}.` +
+    "\n\nEn cuanto lo confirmes, te enviaré el presupuesto por este mismo chat."
+  );
+}
+
+function isBudgetViewRequest(message) {
+  const text = normalizeLooseText(message);
+  if (!/\b(presupuesto|estimacion|importe|precio)\b/.test(text)) return false;
+  return /\b(ver|mostrar|mandar|enviar|pasar|reenviar|poner|aqui|whatsapp|confirmad[oa]|correo|email)\b/.test(text);
+}
+
+function formatBudgetAmount(amount) {
+  return Number(amount || 0).toLocaleString("es-ES");
+}
+
+function buildWhatsappBudgetMessage(budget, options = {}) {
+  const ivaTxt = budget?.iva_included ? "(IVA incluido)" : "+ IVA aparte";
+  const title = String(budget?.title || "Presupuesto orientativo Renoveplac").trim();
+  const rawDescription = String(budget?.description || "").trim();
+  const description = rawDescription.length > 2500
+    ? `${rawDescription.slice(0, 2500).trim()}\n...`
+    : rawDescription;
+  const intro = options.intro || "Email confirmado. Aquí tienes tu presupuesto orientativo:";
+
+  return [
+    intro,
+    "",
+    "━━━━━━━━━━━━━━━━━━",
+    "📋 *PRESUPUESTO ORIENTATIVO*",
+    `*${title}*`,
+    `Importe: *${formatBudgetAmount(budget?.amount_eur)} €* ${ivaTxt}`,
+    "",
+    description,
+    "━━━━━━━━━━━━━━━━━━",
+    "",
+    "Si te encaja, responde *ACEPTO* y Luis, de Renoveplac, coordinará contigo la visita técnica.",
+  ].filter(Boolean).join("\n").slice(0, 4096);
+}
+
+function budgetMessageAlreadySent(content, budget) {
+  const text = normalizeLooseText(content);
+  const title = normalizeLooseText(budget?.title).slice(0, 80);
+  const digits = String(content || "").replace(/\D/g, "");
+  const amount = String(Math.round(Number(budget?.amount_eur || 0)));
+  return (
+    text.includes("presupuesto orientativo") &&
+    (!title || text.includes(title)) &&
+    (!amount || digits.includes(amount))
+  );
+}
+
+async function fetchBudgetById(budgetId) {
+  const { data, error } = await supabase
+    .from("bot_budgets")
+    .select("id, conversation_id, title, description, amount_eur, iva_included, status, created_at, accepted_at")
+    .eq("id", budgetId)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function sendBudgetToWhatsapp(conv, budget, options = {}) {
+  if (!conv || conv.channel !== "whatsapp" || !conv.customer_phone || !budget) {
+    return { skipped: true, reason: "not_whatsapp" };
+  }
+
+  const allowDuplicate = !!options.allowDuplicate;
+  const content = buildWhatsappBudgetMessage(budget, { intro: options.intro });
+
+  if (!allowDuplicate) {
+    const { data: recentMsgs } = await supabase
+      .from("bot_messages")
+      .select("content")
+      .eq("conversation_id", conv.id)
+      .eq("role", "assistant")
+      .order("created_at", { ascending: false })
+      .limit(25);
+
+    if ((recentMsgs || []).some((msg) => budgetMessageAlreadySent(msg.content, budget))) {
+      return { skipped: true, reason: "already_sent" };
+    }
+  }
+
+  const sendResult = await wa.sendText(conv.customer_phone, content);
+  if (!sendResult.ok) return { ok: false, error: sendResult.error || sendResult };
+
+  const { data: assistantMsgRow, error } = await supabase
+    .from("bot_messages")
+    .insert({
+      conversation_id: conv.id,
+      role: "assistant",
+      content,
+    })
+    .select()
+    .single();
+  if (error) console.warn("[whatsapp/budget] enviado pero no se pudo guardar mensaje:", error.message);
+  return { ok: true, assistantMsgRow };
 }
 
 function renderBudgetConfirmationPage({ budgetId, token, email }) {
@@ -961,6 +1061,40 @@ function renderBudgetConfirmationPage({ budgetId, token, email }) {
         <input type="hidden" name="token" value="${escapeHtml(token)}" />
         <button type="submit">Confirmar email y ver presupuesto</button>
       </form>
+    </main>
+  </body>
+</html>`;
+}
+
+function renderBudgetWhatsappConfirmedPage() {
+  const businessPhone = normalizePhoneForWhatsapp(
+    process.env.WHATSAPP_PUBLIC_PHONE ||
+    process.env.WHATSAPP_BUSINESS_PHONE ||
+    "34602727334"
+  );
+  const waUrl = businessPhone ? `https://wa.me/${encodeURIComponent(businessPhone)}` : "";
+  return `<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>Email confirmado | Renoveplac</title>
+    <style>
+      :root { color-scheme: light; font-family: Arial, sans-serif; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f3f6f4; color: #10241f; }
+      main { width: min(92vw, 500px); background: #fff; border: 1px solid #dbe5df; border-radius: 14px; padding: 30px; box-shadow: 0 18px 45px rgba(13, 48, 38, 0.12); }
+      h1 { margin: 0 0 12px; font-size: 24px; line-height: 1.2; }
+      p { margin: 0 0 18px; line-height: 1.55; color: #40534d; }
+      a { display: inline-block; border-radius: 10px; background: #25d366; color: #fff; padding: 13px 18px; text-decoration: none; font-weight: 800; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Email confirmado</h1>
+      <p>Perfecto. Te hemos enviado el presupuesto orientativo por el mismo chat de WhatsApp.</p>
+      <p>Ya puedes volver a la conversación para revisarlo y responder <strong>ACEPTO</strong> si te encaja.</p>
+      ${waUrl ? `<a href="${waUrl}">Volver a WhatsApp</a>` : ""}
     </main>
   </body>
 </html>`;
@@ -1017,7 +1151,7 @@ async function confirmBudgetEmail(id, rawToken) {
 async function fetchLatestPendingBudget(conversationId) {
   const { data } = await supabase
     .from("bot_budgets")
-    .select("id")
+    .select("id, conversation_id, title, description, amount_eur, iva_included, status, created_at, accepted_at")
     .eq("conversation_id", conversationId)
     .eq("status", "pending")
     .order("created_at", { ascending: false })
@@ -1640,6 +1774,17 @@ app.get("/api/budget/:id/confirm", async (req, res) => {
     if (confirmation.confirmed_at) {
       const conv = await loadConversation(confirmation.conversation_id);
       if (!conv?.access_token) return res.status(404).send("Conversacion no encontrada.");
+      if (conv.channel === "whatsapp") {
+        const budget = await fetchBudgetById(id);
+        const delivery = await sendBudgetToWhatsapp(conv, budget, {
+          intro: "Tu email ya estaba confirmado. Te dejo de nuevo el presupuesto orientativo:",
+        });
+        console.log(`[budget/confirm:get] WhatsApp ya confirmado ${id}: ${JSON.stringify(delivery)}`);
+        return res
+          .status(200)
+          .type("html")
+          .send(renderBudgetWhatsappConfirmedPage());
+      }
       const redirectUrl = `${PUBLIC_URL}/?t=${encodeURIComponent(conv.access_token)}&email_confirmed=1`;
       return res.redirect(303, redirectUrl);
     }
@@ -1659,6 +1804,17 @@ app.post("/api/budget/:id/confirm", async (req, res) => {
     const { id } = req.params;
     const rawToken = String(req.body?.token || req.query?.token || "");
     const { conv } = await confirmBudgetEmail(id, rawToken);
+    if (conv.channel === "whatsapp") {
+      const budget = await fetchBudgetById(id);
+      const delivery = await sendBudgetToWhatsapp(conv, budget, {
+        intro: "Email confirmado. Aquí tienes tu presupuesto orientativo:",
+      });
+      console.log(`[budget/confirm:post] WhatsApp ${id}: ${JSON.stringify(delivery)}`);
+      return res
+        .status(200)
+        .type("html")
+        .send(renderBudgetWhatsappConfirmedPage());
+    }
     const redirectUrl = `${PUBLIC_URL}/?t=${encodeURIComponent(conv.access_token)}&email_confirmed=1`;
     return res.redirect(303, redirectUrl);
   } catch (err) {
@@ -1879,12 +2035,17 @@ async function loadConversationByPhone(phone) {
     .limit(1);
   if (!data || data.length === 0) return null;
   const conv = data[0];
+  const messageLimit = Math.max(14, WHATSAPP_HISTORY_LIMIT + 6);
   const { data: msgs } = await supabase
     .from("bot_messages")
     .select("id, role, content, image_url, created_at")
     .eq("conversation_id", conv.id)
-    .order("created_at", { ascending: true });
-  return { ...conv, messages: msgs || [] };
+    .order("created_at", { ascending: false })
+    .limit(messageLimit);
+  const messages = (msgs || []).reverse();
+  const enriched = { ...conv, messages };
+  await updateLeadData(enriched, buildLeadPatchFromMessages(enriched, messages));
+  return enriched;
 }
 
 async function acceptBudgetInternal(budgetId) {
@@ -2113,6 +2274,43 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
 
     if (conv.bot_enabled === false) return;
 
+    if (isBudgetViewRequest(userMessage)) {
+      const pendingBudget = await fetchLatestPendingBudget(conv.id);
+      if (pendingBudget) {
+        const confirmation = await fetchBudgetConfirmation(pendingBudget.id);
+        if (confirmation && !confirmation.confirmed_at) {
+          const reply = buildEmailConfirmationRequiredMessage(confirmation);
+          await supabase.from("bot_messages").insert({
+            conversation_id: conv.id,
+            role: "assistant",
+            content: reply,
+          });
+          const sendStartedAt = Date.now();
+          const sendResult = await wa.sendText(from, reply);
+          console.log(
+            `[whatsapp] ${waMessageId}: presupuesto pendiente de email respondido en ${Date.now() - sendStartedAt}ms ` +
+              `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+          );
+          return;
+        }
+
+        const sendStartedAt = Date.now();
+        const delivery = await sendBudgetToWhatsapp(
+          conv,
+          pendingBudget,
+          {
+            allowDuplicate: true,
+            intro: "Claro. Te dejo por aquí el presupuesto orientativo:",
+          }
+        );
+        console.log(
+          `[whatsapp] ${waMessageId}: presupuesto reenviado en ${Date.now() - sendStartedAt}ms ` +
+            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!delivery.ok})`
+        );
+        return;
+      }
+    }
+
     if (isHumanHandoffRequest(userMessage)) {
       try {
         const result = await requestHumanHandoff(
@@ -2259,13 +2457,14 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         return { ok: true };
       },
       maxTokens: WHATSAPP_MAX_TOKENS,
+      stopAfterBudget: true,
     });
     console.log(`[whatsapp] ${waMessageId}: modelo listo en ${Date.now() - modelStartedAt}ms`);
 
     let botReply = result.text || "";
     if (result.budget) {
       if (result.budget.email_confirmation) {
-        botReply = buildBudgetConfirmationMessage(result.budget.email_confirmation);
+        botReply = buildBudgetConfirmationMessage(result.budget.email_confirmation, "whatsapp");
       } else {
         const b = result.budget;
         const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
