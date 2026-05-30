@@ -89,6 +89,9 @@ WHATSAPP_PHONE_NUMBER_ID=identificador_del_numero_de_telefono
 WHATSAPP_BUSINESS_ACCOUNT_ID=identificador_de_la_cuenta_de_whatsapp_business
 WHATSAPP_API_VERSION=v21.0
 WHATSAPP_HISTORY_LIMIT=24
+WHATSAPP_FORM_TEMPLATE_NAME=solicitud_presupuesto_web
+WHATSAPP_FORM_TEMPLATE_LANG=es
+WHATSAPP_FORM_TEMPLATE_PARAMS=nombre_cliente,tipo_reforma,codigo_postal
 ```
 
 `PUBLIC_URL` es la URL pública del bot (la usa para los enlaces del email y debe coincidir con el dominio que configures como Callback URL del webhook de WhatsApp). En producción no debe apuntar a `localhost`; usa algo como `https://despliegue-renovplac.vercel.app`.
@@ -119,6 +122,19 @@ El repo ya incluye `vercel.json` con `includeFiles` para que `info/` y `public/`
 ## 5. Conectar el formulario de WordPress
 
 El formulario de `renoveplac.com` debe enviar los campos a `POST {PUBLIC_URL}/api/form` con el header `X-Form-Secret: <FORM_SECRET>`.
+
+Para que Renoveplac pueda iniciar un WhatsApp a un cliente que acaba de rellenar el formulario, Meta exige una plantilla aprobada. Crea una plantilla en WhatsApp Manager y define su nombre en `WHATSAPP_FORM_TEMPLATE_NAME`. Ejemplo recomendado:
+
+- Nombre: `solicitud_presupuesto_web`
+- Idioma: `es`
+- Categoria: utilidad
+- Cuerpo:
+
+```text
+Hola {{1}}, soy Renovebot, de Renoveplac. Hemos recibido tu solicitud de presupuesto sobre {{2}}. Codigo postal: {{3}}. Responde a este WhatsApp con los detalles de la reforma y te ayudo a preparar el presupuesto.
+```
+
+Con `WHATSAPP_FORM_TEMPLATE_PARAMS=nombre_cliente,tipo_reforma,codigo_postal`, el servidor rellena las variables `{{nombre_cliente}}`, `{{tipo_reforma}}` y `{{codigo_postal}}` con los datos del formulario. Si no configuras plantilla, el endpoint intentara enviar texto libre, pero Meta normalmente lo bloqueara si el cliente no ha escrito antes a ese WhatsApp.
 
 Campos esperados (acepta nombres en inglés o castellano):
 

@@ -30,6 +30,14 @@ const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 6);
 const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 1);
 const WHATSAPP_MAX_TOKENS = Number(process.env.WHATSAPP_MAX_TOKENS || 420);
 const WHATSAPP_FAST_GREETING_ENABLED = process.env.WHATSAPP_FAST_GREETING_ENABLED !== "0";
+const WHATSAPP_FORM_TEMPLATE_NAME = String(process.env.WHATSAPP_FORM_TEMPLATE_NAME || "").trim();
+const WHATSAPP_FORM_TEMPLATE_LANG = String(process.env.WHATSAPP_FORM_TEMPLATE_LANG || "es").trim();
+const WHATSAPP_FORM_TEMPLATE_PARAMS = String(
+  process.env.WHATSAPP_FORM_TEMPLATE_PARAMS || "nombre_cliente,tipo_reforma,codigo_postal"
+)
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
 const MIN_BUDGET_AMOUNT_EUR = 600;
 const ACCEPT_BUDGET_REGEX = /^\s*(acepto|si\s+acepto|s[ií]\s+acepto|quiero\s+aceptar|aceptar)\b/i;
 
@@ -153,16 +161,87 @@ function normalizePhoneForWhatsapp(value) {
   return digits.length === 9 ? `34${digits}` : digits;
 }
 
-function buildFormWhatsappGreeting({ name, workType, postalCode }) {
+function buildFormWhatsappGreeting({ name, workType, postalCode, message }) {
   const firstName = String(name || "").trim().split(/\s+/)[0] || "";
   const introName = firstName ? ` ${firstName}` : "";
   const workText = workType ? ` sobre ${String(workType).toLowerCase()}` : "";
   const zoneText = postalCode ? ` Tengo anotado el codigo postal ${postalCode}.` : "";
+  const cleanMessage = String(message || "").replace(/\s+/g, " ").trim();
+  const messageText = cleanMessage ? ` Tambien tengo anotado: "${cleanMessage.slice(0, 220)}".` : "";
   return (
     `Hola${introName}, soy Renovebot, el asistente de Renoveplac. Hemos recibido tu solicitud${workText} desde la web.` +
-    `${zoneText}\n\n` +
-    "Para ayudarte con el presupuesto, cuentame que reforma tienes en mente y cualquier detalle importante: medidas aproximadas, estado actual o plazo que buscas."
+    `${zoneText}${messageText}\n\n` +
+    "Para continuar con tu presupuesto, respondeme por aqui con cualquier detalle que falte: medidas aproximadas, estado actual, fotos o plazo que buscas."
   );
+}
+
+function buildFormLeadSummary({ name, email, phone, whatsappPhone, postalCode, workType, message }) {
+  return [
+    `Nombre: ${name || "(sin nombre)"}`,
+    `Email: ${email || "(sin email)"}`,
+    `Telefono: ${whatsappPhone || phone || "(sin telefono)"}`,
+    `Codigo postal: ${postalCode || "(sin CP)"}`,
+    `Tipo de obra: ${workType || "(no especificado)"}`,
+    "",
+    "Mensaje del formulario:",
+    message || "(sin mensaje)",
+  ].join("\n");
+}
+
+function getFormTemplateParamValue(param, formData) {
+  const key = normalizeFormKey(param);
+  const firstName = String(formData.name || "").trim().split(/\s+/)[0] || "cliente";
+  const values = {
+    name: formData.name,
+    nombre: formData.name,
+    nombrecliente: formData.name,
+    firstname: firstName,
+    primernombre: firstName,
+    email: formData.email,
+    correo: formData.email,
+    phone: formData.whatsappPhone || formData.phone,
+    telefono: formData.whatsappPhone || formData.phone,
+    whatsapp: formData.whatsappPhone || formData.phone,
+    postalcode: formData.postalCode,
+    codigopostal: formData.postalCode,
+    cp: formData.postalCode,
+    worktype: formData.workType,
+    tipotrabajo: formData.workType,
+    tiporeforma: formData.workType,
+    tipodeobra: formData.workType,
+    reforma: formData.workType,
+    message: formData.message,
+    mensaje: formData.message,
+  };
+  const value = values[key];
+  if (value === undefined || value === null || String(value).trim() === "") return "-";
+  return String(value).trim().slice(0, 900);
+}
+
+function buildFormTemplateParams(formData) {
+  return WHATSAPP_FORM_TEMPLATE_PARAMS.map((param) => getFormTemplateParamValue(param, formData));
+}
+
+async function sendFormWhatsappStart(formData, greeting) {
+  if (!formData.whatsappPhone) return { sent: false, method: "none", reason: "missing_phone" };
+
+  if (WHATSAPP_FORM_TEMPLATE_NAME) {
+    const templateResult = await wa.sendTemplate(
+      formData.whatsappPhone,
+      WHATSAPP_FORM_TEMPLATE_NAME,
+      WHATSAPP_FORM_TEMPLATE_LANG,
+      buildFormTemplateParams(formData)
+    );
+    if (templateResult.ok) return { sent: true, method: "template", result: templateResult };
+    console.warn(
+      `[form] No se pudo enviar plantilla WhatsApp ${WHATSAPP_FORM_TEMPLATE_NAME} a ${formData.whatsappPhone}:`,
+      JSON.stringify(templateResult.error || templateResult)
+    );
+  }
+
+  const textResult = await wa.sendText(formData.whatsappPhone, greeting);
+  if (textResult.ok) return { sent: true, method: "text", result: textResult };
+  return { sent: false, method: WHATSAPP_FORM_TEMPLATE_NAME ? "template_then_text" : "text", result: textResult };
 }
 
 function escapeHtml(value) {
@@ -1417,18 +1496,28 @@ app.post("/api/form", async (req, res) => {
       }
     }
 
-    const name = readFormValue(req.body, ["name", "nombre", "nombre y apellido", "nombre completo"]).trim();
-    const email = readFormValue(req.body, ["email", "correo", "correo electronico", "e-mail"]).trim();
+    const name = readFormValue(req.body, ["name", "nombre", "nombre y apellido", "nombre y apellidos", "nombre completo"]).trim();
+    const email = normalizeEmail(readFormValue(req.body, ["email", "correo", "correo electronico", "e-mail"]));
     const phone = readFormValue(req.body, ["phone", "telefono", "telefono movil", "movil", "whatsapp"]).trim();
-    const postalCode = readFormValue(req.body, ["postal_code", "codigo postal", "cp"]).trim();
-    const workType = readFormValue(req.body, ["work_type", "tipo trabajo", "tipo de trabajo", "servicio", "reforma"]).trim();
-    const message = readFormValue(req.body, ["message", "mensaje", "comentarios", "descripcion"]).trim();
+    const postalCode = readFormValue(req.body, ["postal_code", "codigo postal", "codigo_postal", "cp"]).trim();
+    const rawWorkType = readFormValue(req.body, ["work_type", "tipo trabajo", "tipo de trabajo", "tipo de obra", "servicio", "reforma", "opcion"]).trim();
+    const workType = normalizeWorkType(rawWorkType) || rawWorkType;
+    const message = readFormValue(req.body, ["message", "mensaje", "comentarios", "descripcion", "observaciones"]).trim();
 
     if (!email || !name) {
       return res.status(400).json({ error: "Faltan datos obligatorios (nombre y email)." });
     }
 
     const whatsappPhone = normalizePhoneForWhatsapp(phone);
+    const formData = {
+      name,
+      email,
+      phone,
+      whatsappPhone,
+      postalCode,
+      workType,
+      message,
+    };
     const token = generateToken();
     const { data: conv, error } = await supabase
       .from("bot_conversations")
@@ -1448,7 +1537,7 @@ app.post("/api/form", async (req, res) => {
     if (error) throw error;
 
     const firstName = name.split(" ")[0];
-    const greeting = buildFormWhatsappGreeting({ name, workType, postalCode });
+    const greeting = buildFormWhatsappGreeting({ name, workType, postalCode, message });
     await supabase.from("bot_messages").insert({
       conversation_id: conv.id,
       role: "assistant",
@@ -1456,11 +1545,16 @@ app.post("/api/form", async (req, res) => {
     });
 
     let whatsappSent = false;
+    let whatsappMethod = "none";
     if (whatsappPhone) {
-      const sendResult = await wa.sendText(whatsappPhone, greeting);
-      whatsappSent = !!sendResult.ok;
+      const sendResult = await sendFormWhatsappStart(formData, greeting);
+      whatsappSent = !!sendResult.sent;
+      whatsappMethod = sendResult.method || "unknown";
       if (!whatsappSent) {
-        console.warn(`[form] No se pudo iniciar WhatsApp para ${whatsappPhone}:`, JSON.stringify(sendResult.error || sendResult));
+        console.warn(
+          `[form] No se pudo iniciar WhatsApp para ${whatsappPhone}:`,
+          JSON.stringify(sendResult.result?.error || sendResult)
+        );
       }
     }
 
@@ -1479,13 +1573,24 @@ app.post("/api/form", async (req, res) => {
       }, "form/cliente");
     }
 
+    const companyLeadText =
+      `Lead recibido desde el formulario de la web.\n\n${buildFormLeadSummary(formData)}\n\n` +
+      `Canal de inicio: ${
+        whatsappSent
+          ? `WhatsApp enviado (${whatsappMethod})`
+          : whatsappPhone
+            ? `WhatsApp no enviado (${whatsappMethod}), fallback email`
+            : "Email/chat web"
+      }\n\n` +
+      `Ver conversacion: ${PUBLIC_URL}/admin#${conv.id}`;
+
     await safeSendEmail({
       to: COMPANY_EMAIL,
       subject: `Nuevo lead desde web — ${name}${workType ? ` (${workType})` : ""}`,
-      text: `Lead recibido desde el formulario de la web.\n\nNombre: ${name}\nEmail: ${email}\nTeléfono: ${whatsappPhone || phone || "(sin teléfono)"}\nCP: ${postalCode || "(sin CP)"}\nTipo de obra: ${workType || "(no especificado)"}\nCanal de inicio: ${whatsappSent ? "WhatsApp enviado" : whatsappPhone ? "WhatsApp no enviado, fallback email" : "Email/chat web"}\nMensaje:\n${message || "(sin mensaje)"}\n\nVer conversación: ${PUBLIC_URL}/admin#${conv.id}`,
+      text: companyLeadText,
     }, "form/empresa");
 
-    return res.json({ ok: true, conversationId: conv.id, chatUrl, whatsappSent });
+    return res.json({ ok: true, conversationId: conv.id, chatUrl, whatsappSent, whatsappMethod });
   } catch (err) {
     console.error("[form]", err);
     return res.status(500).json({ error: "No se pudo registrar el formulario." });
