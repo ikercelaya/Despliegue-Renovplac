@@ -106,6 +106,15 @@ function normalizeFormKey(value) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+function normalizeTemplateParameterName(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function collectFormFields(value, prefix = "", out = []) {
   if (value === null || value === undefined) return out;
   if (typeof value !== "object") {
@@ -148,6 +157,46 @@ function readFormValue(body, aliases) {
     return normalizedAliases.some((alias) => key.includes(alias) || alias.includes(key));
   });
   return partial?.value || "";
+}
+
+function normalizePostalCode(value) {
+  const match = String(value || "").match(/\b(\d{5})\b/);
+  if (!match) return "";
+  const cp = match[1];
+  return /^(0[1-9]|[1-4]\d|5[0-2])\d{3}$/.test(cp) ? cp : "";
+}
+
+function readPostalCodeFromForm(body, phone) {
+  const direct = normalizePostalCode(readFormValue(body, [
+    "postal_code",
+    "codigo postal",
+    "codigo_postal",
+    "codigo-postal",
+    "codigopostal",
+    "codigo postal cliente",
+    "cp",
+    "c.p.",
+    "postcode",
+    "postalcode",
+    "zip",
+  ]));
+  if (direct) return direct;
+
+  const phoneDigits = String(phone || "").replace(/\D/g, "");
+  const fields = collectFormFields(body);
+  const keyed = fields.find((field) => {
+    const key = normalizeFormKey(field.key);
+    return /(codigopostal|postalcode|postcode|zipcode|cp)/.test(key) && normalizePostalCode(field.value);
+  });
+  if (keyed) return normalizePostalCode(keyed.value);
+
+  const loose = fields.find((field) => {
+    const cp = normalizePostalCode(field.value);
+    if (!cp) return false;
+    const digits = String(field.value || "").replace(/\D/g, "");
+    return digits !== phoneDigits && !phoneDigits.includes(cp);
+  });
+  return loose ? normalizePostalCode(loose.value) : "";
 }
 
 function normalizePhoneForWhatsapp(value) {
@@ -219,7 +268,12 @@ function getFormTemplateParamValue(param, formData) {
 }
 
 function buildFormTemplateParams(formData) {
-  return WHATSAPP_FORM_TEMPLATE_PARAMS.map((param) => getFormTemplateParamValue(param, formData));
+  return WHATSAPP_FORM_TEMPLATE_PARAMS.map((param) => {
+    const name = String(param || "").trim();
+    const text = getFormTemplateParamValue(name, formData);
+    if (!name || /^\d+$/.test(name)) return text;
+    return { parameter_name: normalizeTemplateParameterName(name), text };
+  });
 }
 
 async function sendFormWhatsappStart(formData, greeting) {
@@ -1499,10 +1553,19 @@ app.post("/api/form", async (req, res) => {
     const name = readFormValue(req.body, ["name", "nombre", "nombre y apellido", "nombre y apellidos", "nombre completo"]).trim();
     const email = normalizeEmail(readFormValue(req.body, ["email", "correo", "correo electronico", "e-mail"]));
     const phone = readFormValue(req.body, ["phone", "telefono", "telefono movil", "movil", "whatsapp"]).trim();
-    const postalCode = readFormValue(req.body, ["postal_code", "codigo postal", "codigo_postal", "cp"]).trim();
+    const postalCode = readPostalCodeFromForm(req.body, phone);
     const rawWorkType = readFormValue(req.body, ["work_type", "tipo trabajo", "tipo de trabajo", "tipo de obra", "servicio", "reforma", "opcion"]).trim();
     const workType = normalizeWorkType(rawWorkType) || rawWorkType;
     const message = readFormValue(req.body, ["message", "mensaje", "comentarios", "descripcion", "observaciones"]).trim();
+
+    console.log("[form] solicitud recibida", {
+      hasName: Boolean(name),
+      hasEmail: Boolean(email),
+      hasPhone: Boolean(phone),
+      hasPostalCode: Boolean(postalCode),
+      hasWorkType: Boolean(workType),
+      bodyKeys: Object.keys(req.body || {}).slice(0, 20),
+    });
 
     if (!email || !name) {
       return res.status(400).json({ error: "Faltan datos obligatorios (nombre y email)." });
