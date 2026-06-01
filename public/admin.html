@@ -276,7 +276,15 @@
       .filter-chip:hover { background: var(--navy-soft); }
       .filter-chip.active { background: var(--gradient-brand); color: #fff; border-color: transparent; }
       .filter-chip .count { margin-left: 4px; opacity: 0.9; font-weight: 500; }
-      .conv-list { list-style: none; margin: 0; padding: 0; flex: 1; overflow-y: auto; }
+      .conv-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        flex: 1;
+        overflow-y: auto;
+        scrollbar-width: none;
+      }
+      .conv-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
       .conv-list li {
         padding: 12px 16px;
         border-bottom: 1px solid var(--navy-line);
@@ -328,6 +336,11 @@
       .badge-budget_accepted { background: #cce4ff; color: #0a3d6c; }
       .badge-closed { background: #99a2b5; color: #fff; }
       .badge-bot-paused { background: #ff9b9b; color: #5a0e0e; }
+      .badge-awaiting-human {
+        background: #fff3bf;
+        color: #795000;
+        border: 1px solid #ffd43b;
+      }
 
       .main { display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
       .empty { flex: 1; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 40px; }
@@ -475,7 +488,10 @@
         font-weight: 700; font-size: 11.5px;
         flex: 0 0 auto;
       }
-      .avatar-msg.admin { background: var(--gradient-brand); color: #fff; }
+      .avatar-msg.admin {
+        background: linear-gradient(135deg, #143c32 0%, #2f8f68 100%);
+        color: #fff;
+      }
       .avatar-msg.bot { background: var(--navy); }
       .bubble {
         max-width: 70%;
@@ -487,9 +503,22 @@
       }
       .bubble.bot { background: #fff; border: 1px solid var(--line); border-bottom-left-radius: 4px; }
       .bubble.user { background: var(--user-bubble); border-bottom-right-radius: 4px; }
-      .bubble.admin { background: var(--admin-bubble); border: 1px solid var(--admin-bubble-border); border-bottom-left-radius: 4px; }
+      .bubble.admin {
+        background: linear-gradient(180deg, #f3fbf6 0%, #eaf7ef 100%);
+        border: 1px solid #b9dccd;
+        border-left: 4px solid #2f8f68;
+        border-bottom-left-radius: 4px;
+        color: #143c32;
+      }
       .bubble .meta { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
       .bubble .meta strong { color: var(--text); font-weight: 600; }
+      .bubble.admin .meta {
+        margin-top: 8px;
+        padding-top: 6px;
+        border-top: 1px solid rgba(47,143,104,0.2);
+        color: #4d7668;
+      }
+      .bubble.admin .meta strong { color: #143c32; font-weight: 800; }
 
       .budget-card {
         max-width: 75%;
@@ -601,6 +630,12 @@
         .conv-list li {
           min-height: 76px;
           padding: 14px 12px;
+        }
+        .conv-list {
+          scrollbar-width: none;
+        }
+        .conv-list::-webkit-scrollbar {
+          display: none;
         }
         .conv-list li.active { padding-left: 9px; }
         .conv-avatar { width: 42px; height: 42px; }
@@ -1011,6 +1046,7 @@
           const err = await r.json().catch(() => ({}));
           throw new Error(err.error || "No se pudo enviar el correo de recuperacion.");
         }
+        return r.json().catch(() => ({}));
       }
       function logout() {
         token = null;
@@ -1074,6 +1110,7 @@
           const status = c.status || "active";
           const subline = c.work_type || c.customer_postal_code || c.customer_phone || c.customer_email || sourceLabel(c);
           const botPaused = c.bot_enabled === false;
+          const awaitingHuman = c.awaiting_human === true;
           li.innerHTML =
             '<div class="conv-avatar">' + escapeHtml(initials(label)) + '</div>' +
             '<div class="conv-body">' +
@@ -1084,6 +1121,7 @@
               '<div class="preview">' + escapeHtml(subline) + '</div>' +
               '<div class="badges">' +
                 '<span class="badge badge-' + status + '">' + escapeHtml(statusLabel(status)) + '</span>' +
+                (awaitingHuman ? '<span class="badge badge-awaiting-human">Esperando ayuda</span>' : "") +
                 (botPaused ? '<span class="badge badge-bot-paused">Bot pausado</span>' : "") +
               '</div>' +
             '</div>';
@@ -1136,6 +1174,7 @@
         const name = conv.customer_name || "Cliente sin nombre";
         const status = conv.status || "active";
         const botEnabled = conv.bot_enabled !== false;
+        const awaitingHuman = conv.awaiting_human === true;
         const isClosed = status === "closed";
         const previousPane = document.getElementById("messagesPane");
         const preserveScroll = options.preserveScroll && previousPane;
@@ -1157,6 +1196,7 @@
               '<div class="title">' + escapeHtml(name) + '</div>' +
               '<div class="chips">' +
                 '<span class="badge badge-' + status + '">' + escapeHtml(statusLabel(status)) + '</span>' +
+                (awaitingHuman ? '<span class="badge badge-awaiting-human">Esperando ayuda</span>' : "") +
                 (botEnabled ? "" : '<span class="badge badge-bot-paused">Bot pausado</span>') +
                 (conv.work_type ? '<span class="chip">' + escapeHtml(conv.work_type) + '</span>' : "") +
                 (conv.customer_postal_code ? '<span class="chip">CP ' + escapeHtml(conv.customer_postal_code) + '</span>' : "") +
@@ -1293,8 +1333,8 @@
 
       function renderMessageItem(m) {
         const role = m.role === "user" ? "user" : m.role === "admin" ? "admin" : "bot";
-        const who = role === "user" ? "Cliente" : role === "admin" ? "Renoveplac" : "Renovebot";
-        const initialsAvatar = role === "admin" ? "RP" : "RB";
+        const who = role === "user" ? "Cliente" : role === "admin" ? "Luis - Equipo de Renoveplac" : "Renovebot";
+        const initialsAvatar = role === "admin" ? "LU" : "RB";
         const imageHtml = m.image_url
           ? '<a href="' + escapeHtml(m.image_url) + '" target="_blank" rel="noopener"><img src="' + escapeHtml(m.image_url) + '" alt="Imagen adjunta" style="display:block;max-width:280px;max-height:280px;border-radius:8px;margin-bottom:6px;cursor:zoom-in;" /></a>'
           : "";
@@ -1468,8 +1508,9 @@
           const previousText = forgotPasswordBtn.textContent;
           forgotPasswordBtn.textContent = "Enviando...";
           try {
-            await requestPasswordRecovery();
-            forgotMsg.textContent = "Te hemos enviado las instrucciones a contacto@renoveplac.com.";
+            const recovery = await requestPasswordRecovery();
+            const recoveryEmail = recovery && recovery.to ? recovery.to : "contacto@renoveplac.com";
+            forgotMsg.textContent = "Te hemos enviado las instrucciones a " + recoveryEmail + ". Revisa tambien spam o promociones.";
             forgotMsg.style.display = "block";
           } catch (err) {
             loginErr.textContent = err.message;

@@ -24,6 +24,7 @@ const DEFAULT_ADMIN_PASSWORD = "Renovepl@c1234";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD;
 const FORM_SECRET = process.env.FORM_SECRET || "";
 const COMPANY_EMAIL = "contacto@renoveplac.com";
+const ADMIN_RECOVERY_EMAIL = process.env.ADMIN_RECOVERY_EMAIL || COMPANY_EMAIL;
 const HUMAN_HANDOFF_EMAIL = process.env.HUMAN_HANDOFF_EMAIL || COMPANY_EMAIL;
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
 const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 6);
@@ -169,13 +170,22 @@ function normalizePostalCode(value) {
 function readPostalCodeFromForm(body, phone) {
   const direct = normalizePostalCode(readFormValue(body, [
     "postal_code",
+    "postal code",
+    "postal-code",
     "codigo postal",
     "codigo_postal",
     "codigo-postal",
     "codigopostal",
     "codigo postal cliente",
+    "codigo_postal_cliente",
+    "codigo-postal-cliente",
     "cp",
     "c.p.",
+    "cp cliente",
+    "zip_code",
+    "zip-code",
+    "post_code",
+    "post-code",
     "postcode",
     "postalcode",
     "zip",
@@ -196,7 +206,13 @@ function readPostalCodeFromForm(body, phone) {
     const digits = String(field.value || "").replace(/\D/g, "");
     return digits !== phoneDigits && !phoneDigits.includes(cp);
   });
-  return loose ? normalizePostalCode(loose.value) : "";
+  if (loose) return normalizePostalCode(loose.value);
+
+  const serialized = JSON.stringify(body || {});
+  const matches = [...serialized.matchAll(/\b(0[1-9]|[1-4]\d|5[0-2])\d{3}\b/g)]
+    .map((match) => match[0]);
+  const fallback = matches.find((cp) => !phoneDigits.includes(cp));
+  return fallback || "";
 }
 
 function normalizePhoneForWhatsapp(value) {
@@ -526,11 +542,72 @@ async function updateLeadData(conv, patch) {
 
 function cleanConversationForDisplay(conv) {
   if (!conv) return conv;
+  const awaitingHuman =
+    conv.awaiting_human === true ||
+    conv.awaiting_human === "true" ||
+    hasAwaitingHumanMarker(conv);
   return {
     ...conv,
     customer_name: isLikelyInvalidCustomerName(conv.customer_name) ? null : conv.customer_name,
     work_type: normalizeWorkType(conv.work_type) || conv.work_type,
+    awaiting_human: awaitingHuman,
   };
+}
+
+function hasAwaitingHumanMarker(conv) {
+  if (!conv || conv.bot_enabled !== false) return false;
+  const messages = Array.isArray(conv.messages) ? conv.messages : [];
+  return messages.some((message) => {
+    if (message?.role !== "assistant") return false;
+    const text = normalizeLooseText(message.content || "");
+    return (
+      text.includes("he avisado a luis") ||
+      text.includes("bot queda pausado") ||
+      text.includes("persona del equipo pueda revisar") ||
+      text.includes("hablar con un humano")
+    );
+  });
+}
+
+async function fetchAwaitingHumanMap(conversationIds) {
+  const ids = [...new Set((conversationIds || []).filter(Boolean))];
+  const map = new Map();
+  if (!ids.length) return map;
+
+  const { data, error } = await supabase
+    .from("bot_messages")
+    .select("conversation_id, role, content, created_at")
+    .in("conversation_id", ids)
+    .eq("role", "assistant")
+    .order("created_at", { ascending: false })
+    .limit(1000);
+
+  if (error) {
+    console.warn("[admin/conversations] No se pudo calcular espera humana:", error.message);
+    return map;
+  }
+
+  (data || []).forEach((message) => {
+    const text = normalizeLooseText(message.content || "");
+    const isHumanWait =
+      text.includes("he avisado a luis") ||
+      text.includes("bot queda pausado") ||
+      text.includes("persona del equipo pueda revisar") ||
+      text.includes("hablar con un humano");
+    if (isHumanWait) map.set(message.conversation_id, true);
+  });
+
+  return map;
+}
+
+function formatAdminWhatsappMessage(content) {
+  const text = String(content || "").trim();
+  return [
+    "*Luis - Equipo de Renoveplac*",
+    "Mensaje del equipo",
+    "",
+    text,
+  ].join("\n");
 }
 
 function addBudgetAcceptanceHint(text, isWeb) {
@@ -2162,7 +2239,7 @@ app.post("/api/admin/forgot-password", async (_req, res) => {
     `Enlace al panel: ${loginUrl}`,
     `Contrasena de acceso: ${DEFAULT_ADMIN_PASSWORD}`,
     "",
-    "Por seguridad, este aviso se envia solo al correo oficial de Renoveplac.",
+    `Por seguridad, este aviso se envia solo al correo configurado para recuperacion: ${ADMIN_RECOVERY_EMAIL}.`,
   ].join("\n");
   const html = `
     <div style="margin:0;padding:24px;background:#f4f7f6;font-family:Arial,sans-serif;color:#102820;">
@@ -2177,23 +2254,29 @@ app.post("/api/admin/forgot-password", async (_req, res) => {
             <p style="margin:0 0 6px;font-size:13px;font-weight:700;text-transform:uppercase;color:#63726d;">Contrasena activa</p>
             <p style="margin:0;font-size:22px;font-weight:800;color:#143c32;">${escapeHtml(DEFAULT_ADMIN_PASSWORD)}</p>
           </div>
-          <p style="margin:0 0 22px;font-size:14px;line-height:1.6;color:#40534d;">Este correo se envia solo a ${escapeHtml(COMPANY_EMAIL)} para evitar que terceros puedan recuperar el acceso.</p>
+          <p style="margin:0 0 22px;font-size:14px;line-height:1.6;color:#40534d;">Este correo se envia solo a ${escapeHtml(ADMIN_RECOVERY_EMAIL)} para evitar que terceros puedan recuperar el acceso.</p>
           <a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#ff7821;color:#ffffff;text-decoration:none;padding:14px 20px;border-radius:10px;font-weight:800;">Abrir panel</a>
         </div>
       </div>
     </div>`;
 
   const result = await safeSendEmail({
-    to: COMPANY_EMAIL,
+    to: ADMIN_RECOVERY_EMAIL,
+    replyTo: COMPANY_EMAIL,
     subject,
     text,
     html,
   }, "admin/forgot-password");
 
-  if (result?.error) {
+  if (result?.error || result?.mocked) {
     return res.status(500).json({ error: "No se pudo enviar el correo de recuperacion." });
   }
-  return res.json({ ok: true });
+  return res.json({
+    ok: true,
+    to: ADMIN_RECOVERY_EMAIL,
+    provider: result?.provider || "email",
+    id: result?.id || null,
+  });
 });
 
 app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
@@ -2211,7 +2294,19 @@ app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
         : { error: error.message };
       return res.status(isSupabaseConnectionError(error) ? 503 : 500).json(payload);
     }
-    return res.json({ conversations: (data || []).map(cleanConversationForDisplay) });
+    const conversations = data || [];
+    const pausedIds = conversations
+      .filter((conv) => conv.bot_enabled === false)
+      .map((conv) => conv.id);
+    const awaitingMap = await fetchAwaitingHumanMap(pausedIds);
+    return res.json({
+      conversations: conversations.map((conv) =>
+        cleanConversationForDisplay({
+          ...conv,
+          awaiting_human: awaitingMap.get(conv.id) || false,
+        })
+      ),
+    });
   } catch (err) {
     console.error("[admin/conversations]", err);
     if (isSupabaseConnectionError(err)) {
@@ -2250,7 +2345,7 @@ app.post("/api/admin/conversations/:id/reply", requireAdmin, async (req, res) =>
   if (conv.channel === "whatsapp" && conv.customer_phone) {
     const sendResult = await wa.sendText(
       conv.customer_phone,
-      `Luis - Equipo de Renoveplac:\n${content}`
+      formatAdminWhatsappMessage(content)
     );
     whatsappSent = !!sendResult.ok;
     if (!whatsappSent) {

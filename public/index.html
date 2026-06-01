@@ -96,18 +96,19 @@
       .message.bot { background: #ffffff; border: 1px solid #e1e8e3; border-top-left-radius: 2px; }
       .message.user { background: #d9fdd3; border-top-right-radius: 2px; }
       .message.admin {
-        background: #eef8f1;
+        background: linear-gradient(180deg, #f3fbf6 0%, #eaf7ef 100%);
         border: 1px solid #b9dccd;
         border-left: 4px solid #2f8f68;
         border-top-left-radius: 2px;
+        color: #143c32;
       }
       .message .admin-sender {
-        margin-top: 7px;
-        padding-top: 6px;
-        border-top: 1px solid rgba(47, 143, 104, 0.22);
-        color: #2b6c53;
+        margin-bottom: 7px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(47, 143, 104, 0.22);
+        color: #143c32;
         font-size: 12px;
-        font-weight: 700;
+        font-weight: 800;
         line-height: 1.25;
       }
       .privacy-consent {
@@ -619,10 +620,16 @@
         if (msg.id) renderedMessageIds.add(msg.id);
         if (msg.created_at) lastMessageAt = msg.created_at;
         const row = document.createElement("div");
-        row.className = "message-row " + (msg.role === "user" ? "user" : "bot");
+        row.className = "message-row " + (msg.role === "user" ? "user" : msg.role === "admin" ? "admin" : "bot");
         const bubble = document.createElement("div");
         const cls = msg.role === "user" ? "user" : msg.role === "admin" ? "admin" : "bot";
         bubble.className = "message " + cls;
+        if (msg.role === "admin") {
+          const senderEl = document.createElement("div");
+          senderEl.className = "admin-sender";
+          senderEl.textContent = "Luis - Equipo de Renoveplac";
+          bubble.appendChild(senderEl);
+        }
         if (msg.image_url) {
           const img = document.createElement("img");
           img.className = "msg-image";
@@ -636,12 +643,6 @@
           const textEl = document.createElement("div");
           textEl.textContent = text;
           bubble.appendChild(textEl);
-        }
-        if (msg.role === "admin") {
-          const senderEl = document.createElement("div");
-          senderEl.className = "admin-sender";
-          senderEl.textContent = "Luis - Equipo de Renoveplac";
-          bubble.appendChild(senderEl);
         }
         row.appendChild(bubble);
         messagesEl.appendChild(row);
