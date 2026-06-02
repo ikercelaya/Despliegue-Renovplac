@@ -215,6 +215,66 @@ function readPostalCodeFromForm(body, phone) {
   return fallback || "";
 }
 
+function isPlaceholderFormValue(value) {
+  const text = normalizeFormKey(value);
+  return !text || /^(seleccionaunaopcion|seleccioneunaopcion|eligeunaopcion|opcion|none|null|undefined)$/.test(text);
+}
+
+function readWorkTypeFromForm(body) {
+  const direct = readFormValue(body, [
+    "work_type",
+    "work type",
+    "tipo trabajo",
+    "tipo de trabajo",
+    "tipo_reforma",
+    "tipo reforma",
+    "tipo de reforma",
+    "tipo_obra",
+    "tipo obra",
+    "tipo de obra",
+    "servicio",
+    "servicios",
+    "reforma",
+    "obra",
+    "trabajo",
+    "opcion",
+    "selecciona una opcion",
+    "selecciona una opción",
+  ]).trim();
+  if (direct && !isPlaceholderFormValue(direct)) return normalizeWorkType(direct) || direct;
+
+  const fields = collectFormFields(body);
+  for (const field of fields) {
+    const value = String(field.value || "").trim();
+    if (!value || isPlaceholderFormValue(value)) continue;
+    if (normalizeEmail(value) || normalizePostalCode(value) || normalizePhoneForWhatsapp(value)) continue;
+    const normalized = normalizeWorkType(value);
+    if (normalized && normalizeFormKey(normalized) !== normalizeFormKey(value)) return normalized;
+    const loose = normalizeLooseText(value);
+    if (/\b(bano|baño|cocina|piscina|pladur|pintura|fachada|terraza|suelo|pavimento|reforma integral|vivienda|local|comunidad)\b/.test(loose)) {
+      return normalized || value;
+    }
+  }
+
+  const serialized = normalizeLooseText(JSON.stringify(body || {}));
+  const known = [
+    "reforma integral",
+    "bano completo",
+    "baño completo",
+    "cocina",
+    "piscina",
+    "pladur",
+    "pintura",
+    "fachada",
+    "terraza",
+    "suelo",
+    "pavimento",
+    "local comercial",
+    "comunidad",
+  ].find((item) => serialized.includes(normalizeLooseText(item)));
+  return known ? (normalizeWorkType(known) || known) : "";
+}
+
 function normalizePhoneForWhatsapp(value) {
   const digitsOnly = String(value || "").replace(/\D/g, "");
   if (/^34[6-9]\d{8}$/.test(digitsOnly)) return digitsOnly;
@@ -751,6 +811,17 @@ function looksLikeInlineBudgetReply(text) {
   const hasBudgetLanguage = /\b(presupuesto|importe|precio|coste|estaria|seria|saldria|incluye|incluiria)\b/.test(normalized);
   const hasEuroAmount = /(?:\d{1,3}(?:[.\s]\d{3})+|\d{3,6})(?:[,.]\d{1,2})?\s*(?:€|eur|euros?)\b/i.test(raw);
   return hasBudgetLanguage && hasEuroAmount;
+}
+
+function looksLikeBudgetPreparationPromise(text) {
+  const normalized = normalizeLooseText(text);
+  if (!normalized) return false;
+  const mentionsBudget = /\b(presupuesto|estimacion|importe|precio|coste)\b/.test(normalized);
+  if (!mentionsBudget) return false;
+  return (
+    /\b(voy|vamos|puedo|paso|dejo|preparo|calculo|genero|hago)\b.{0,90}\b(preparar\w*|calcular\w*|generar\w*|hacer\w*|dejar\w*|pasar\w*|enviar\w*|mandar\w*)\b/.test(normalized) ||
+    /\b(te lo dejo|te lo preparo|lo preparo|lo calculo|dame un momento|un momento|en un momento|ahora te lo)\b/.test(normalized)
+  );
 }
 
 function buildPreBudgetGuardReply(conv) {
@@ -1311,6 +1382,64 @@ async function sendBudgetToWhatsapp(conv, budget, options = {}) {
   return { ok: true, assistantMsgRow };
 }
 
+async function createConversationBudget(input, conv, fullConv) {
+  assertBudgetCanBeCreated(input, fullConv);
+  if (!normalizeEmail(conv.customer_email)) {
+    throw new Error("Falta email del cliente. Pide un email valido antes de generar el presupuesto.");
+  }
+
+  const { data: budget, error } = await supabase
+    .from("bot_budgets")
+    .insert({
+      conversation_id: conv.id,
+      title: input.title,
+      description: input.description,
+      amount_eur: Number(input.amount_eur) || 0,
+      iva_included: !!input.iva_included,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+
+  await supabase
+    .from("bot_conversations")
+    .update({ status: "budget_sent" })
+    .eq("id", conv.id);
+
+  try {
+    const confirmation = await registerBudgetEmailConfirmation(budget, conv);
+    budget.email_confirmation = confirmation;
+    return budget;
+  } catch (err) {
+    await rollbackBudgetCreation(budget, conv);
+    throw err;
+  }
+}
+
+async function notifyHumanFromWhatsapp(input, conv, from) {
+  const reasonLabel = ({
+    queja: "Queja / reclamacion",
+    solicita_humano: "El cliente pide hablar con persona",
+    lead_premium: "Lead premium",
+    alto_ticket: "Alto ticket (>15.000 EUR)",
+    fuera_de_zona_obra_grande: "Fuera de zona pero obra grande (valorar)",
+  })[input.reason] || input.reason;
+  const lines = [
+    `Aviso del bot (WhatsApp): ${reasonLabel}`,
+    "",
+    `Resumen: ${input.summary || "(sin resumen)"}`,
+    "",
+    `Cliente: ${conv.customer_name || "(sin nombre)"} - ${from}`,
+    `Conversacion: ${PUBLIC_URL}/admin#${conv.id}`,
+  ].join("\n");
+  await safeSendEmail({
+    to: COMPANY_EMAIL,
+    subject: `Aviso bot WA - ${reasonLabel} - ${conv.customer_name || from}`,
+    text: lines,
+  }, "notify_human");
+  return { ok: true };
+}
+
 function renderBudgetConfirmationPage({ budgetId, token, email }) {
   const action = `/api/budget/${encodeURIComponent(budgetId)}/confirm`;
   return `<!doctype html>
@@ -1631,8 +1760,7 @@ app.post("/api/form", async (req, res) => {
     const email = normalizeEmail(readFormValue(req.body, ["email", "correo", "correo electronico", "e-mail"]));
     const phone = readFormValue(req.body, ["phone", "telefono", "telefono movil", "movil", "whatsapp"]).trim();
     const postalCode = readPostalCodeFromForm(req.body, phone);
-    const rawWorkType = readFormValue(req.body, ["work_type", "tipo trabajo", "tipo de trabajo", "tipo de obra", "servicio", "reforma", "opcion"]).trim();
-    const workType = normalizeWorkType(rawWorkType) || rawWorkType;
+    const workType = readWorkTypeFromForm(req.body);
     const message = readFormValue(req.body, ["message", "mensaje", "comentarios", "descripcion", "observaciones"]).trim();
 
     console.log("[form] solicitud recibida", {
@@ -2111,10 +2239,21 @@ app.get("/api/budget/:id/confirm", async (req, res) => {
       return res.redirect(303, redirectUrl);
     }
 
-    return res
-      .status(200)
-      .type("html")
-      .send(renderBudgetConfirmationPage({ budgetId: id, token: rawToken, email: confirmation.email }));
+    const { conv } = await confirmBudgetEmail(id, rawToken);
+    if (conv.channel === "whatsapp") {
+      const budget = await fetchBudgetById(id);
+      const delivery = await sendBudgetToWhatsapp(conv, budget, {
+        intro: "Email confirmado. Aqui tienes tu presupuesto orientativo:",
+      });
+      console.log(`[budget/confirm:get] WhatsApp ${id}: ${JSON.stringify(delivery)}`);
+      return res
+        .status(200)
+        .type("html")
+        .send(renderBudgetWhatsappConfirmedPage());
+    }
+
+    const redirectUrl = `${PUBLIC_URL}/?t=${encodeURIComponent(conv.access_token)}&email_confirmed=1`;
+    return res.redirect(303, redirectUrl);
   } catch (err) {
     console.error("[budget/confirm:get]", err);
     return res.status(500).send("No se pudo cargar la confirmacion.");
@@ -2771,7 +2910,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
 
     const fullConv = { ...conv, messages: messagesWithCurrent };
     const systemPrompt = buildSystemPrompt(
-      buildContext(fullConv) + "\nCANAL: WhatsApp. El cliente NO tiene botones; para aceptar un presupuesto debe responder 'ACEPTO'."
+      buildContext(fullConv) +
+        "\nCANAL: WhatsApp. El cliente NO tiene botones; para aceptar un presupuesto debe responder 'ACEPTO'." +
+        "\nSi ya tienes datos suficientes y el cliente pide presupuesto, usa create_budget en este mismo turno. No respondas que lo prepararas mas tarde."
     );
     const modelMessages = prepareWhatsappModelMessages(fullConv?.messages || [], {
       forceLatestUserImage: msgType === "image" && !!imageUrl,
@@ -2784,65 +2925,37 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     );
 
     const modelStartedAt = Date.now();
-    const result = await runConversation({
+    let result = await runConversation({
       systemPrompt,
       messages: history,
-      onBudget: async (input) => {
-        assertBudgetCanBeCreated(input, fullConv);
-        if (!normalizeEmail(conv.customer_email)) {
-          throw new Error("Falta email del cliente. Pide un email válido antes de generar el presupuesto.");
-        }
-        const { data: budget, error } = await supabase
-          .from("bot_budgets")
-          .insert({
-            conversation_id: conv.id,
-            title: input.title,
-            description: input.description,
-            amount_eur: Number(input.amount_eur) || 0,
-            iva_included: !!input.iva_included,
-          })
-          .select()
-          .single();
-        if (error) throw error;
-        await supabase
-          .from("bot_conversations")
-          .update({ status: "budget_sent" })
-          .eq("id", conv.id);
-        try {
-          const confirmation = await registerBudgetEmailConfirmation(budget, conv);
-          budget.email_confirmation = confirmation;
-          return budget;
-        } catch (err) {
-          await rollbackBudgetCreation(budget, conv);
-          throw err;
-        }
-      },
-      onNotifyHuman: async (input) => {
-        const reasonLabel = ({
-          queja: "Queja / reclamación",
-          solicita_humano: "El cliente pide hablar con persona",
-          lead_premium: "Lead premium",
-          alto_ticket: "Alto ticket (>15.000 €)",
-          fuera_de_zona_obra_grande: "Fuera de zona pero obra grande (valorar)",
-        })[input.reason] || input.reason;
-        const lines = [
-          `Aviso del bot (WhatsApp): ${reasonLabel}`,
-          "",
-          `Resumen: ${input.summary || "(sin resumen)"}`,
-          "",
-          `Cliente: ${conv.customer_name || "(sin nombre)"} · ${from}`,
-          `Conversación: ${PUBLIC_URL}/admin#${conv.id}`,
-        ].join("\n");
-        await safeSendEmail({
-          to: COMPANY_EMAIL,
-          subject: `Aviso bot WA — ${reasonLabel} — ${conv.customer_name || from}`,
-          text: lines,
-        }, "notify_human");
-        return { ok: true };
-      },
+      onBudget: (input) => createConversationBudget(input, conv, fullConv),
+      onNotifyHuman: (input) => notifyHumanFromWhatsapp(input, conv, from),
       maxTokens: WHATSAPP_MAX_TOKENS,
       stopAfterBudget: true,
     });
+
+    if (!result.budget && looksLikeBudgetPreparationPromise(result.text)) {
+      console.warn(`[whatsapp] ${waMessageId}: el modelo prometio presupuesto sin herramienta; forzando create_budget`);
+      const forcedSystemPrompt =
+        systemPrompt +
+        "\n\nINSTRUCCION CRITICA DEL SERVIDOR: no dejes al cliente esperando. Si estan los datos obligatorios, llama ahora a create_budget. Si falta un dato, pide solo ese dato concreto.";
+      result = await runConversation({
+        systemPrompt: forcedSystemPrompt,
+        messages: [
+          ...history,
+          { role: "assistant", content: String(result.text || "").slice(0, 1200) },
+          {
+            role: "user",
+            content:
+              "No prometas preparar el presupuesto mas tarde. Genera ahora el presupuesto con create_budget si tienes los datos obligatorios; si falta algo, dime exactamente que falta.",
+          },
+        ],
+        onBudget: (input) => createConversationBudget(input, conv, fullConv),
+        onNotifyHuman: (input) => notifyHumanFromWhatsapp(input, conv, from),
+        maxTokens: Math.max(WHATSAPP_MAX_TOKENS, 650),
+        stopAfterBudget: true,
+      });
+    }
     console.log(`[whatsapp] ${waMessageId}: modelo listo en ${Date.now() - modelStartedAt}ms`);
 
     let botReply = result.text || "";
@@ -2862,7 +2975,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           `Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.`;
         botReply = (botReply ? botReply + "\n" : "") + card;
       }
-    } else if (looksLikeInlineBudgetReply(botReply)) {
+    } else if (looksLikeInlineBudgetReply(botReply) || looksLikeBudgetPreparationPromise(botReply)) {
       botReply = buildPreBudgetGuardReply(fullConv);
     }
 
