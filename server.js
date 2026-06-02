@@ -116,9 +116,48 @@ function normalizeTemplateParameterName(value) {
     .replace(/^_+|_+$/g, "");
 }
 
+function parseMaybeJsonText(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || !/^[\[{]/.test(text)) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+const FORM_VALUE_KEYS = new Set([
+  "value",
+  "value_raw",
+  "raw_value",
+  "default_value",
+  "selected",
+  "selected_label",
+  "selected_value",
+  "selected_text",
+  "choice",
+  "choice_label",
+  "option_label",
+  "field_value",
+  "display_value",
+  "raw",
+  "answer",
+  "text",
+  "content",
+]);
+
+function isFormMetadataKey(key) {
+  return /^(id|key|name|label|title|type|placeholder|required|css|class|description|choices|options|settings|props|attributes|admin_label|adminlabel|field_id|fieldid|form_id|formid)$/i.test(String(key || ""));
+}
+
 function formValueToText(value) {
   if (value === undefined || value === null) return "";
-  if (typeof value !== "object") return String(value).trim();
+  if (typeof value !== "object") {
+    const parsed = parseMaybeJsonText(value);
+    if (parsed !== null) return formValueToText(parsed);
+    return String(value).trim();
+  }
   if (Array.isArray(value)) {
     return value
       .map((item) => formValueToText(item))
@@ -127,19 +166,39 @@ function formValueToText(value) {
       .trim();
   }
 
-  return firstNonEmptyValue(
+  const direct = firstNonEmptyValue(
     value.value,
     value.value_raw,
     value.raw_value,
     value.default_value,
     value.selected,
     value.selected_label,
+    value.selected_value,
+    value.selected_text,
     value.choice,
-    value.label,
-    value.name,
-    value.title,
-    value.text
+    value.choice_label,
+    value.option_label,
+    value.field_value,
+    value.display_value,
+    value.raw,
+    value.answer,
+    value.text,
+    value.content
   );
+
+  if (direct) return direct;
+
+  const nameParts = firstNonEmptyValue(value.first, value.first_name, value.firstname) || "";
+  const lastParts = firstNonEmptyValue(value.last, value.last_name, value.lastname) || "";
+  const combinedName = `${nameParts} ${lastParts}`.replace(/\s+/g, " ").trim();
+  if (combinedName) return combinedName;
+
+  return Object.entries(value)
+    .filter(([key]) => !FORM_VALUE_KEYS.has(key) && !isFormMetadataKey(key))
+    .map(([, child]) => formValueToText(child))
+    .filter(Boolean)
+    .join(" ")
+    .trim();
 }
 
 function firstNonEmptyValue(...values) {
@@ -156,6 +215,8 @@ function firstNonEmptyValue(...values) {
 function collectFormFields(value, prefix = "", out = []) {
   if (value === null || value === undefined) return out;
   if (typeof value !== "object") {
+    const parsed = parseMaybeJsonText(value);
+    if (parsed !== null) return collectFormFields(parsed, prefix, out);
     if (prefix) out.push({ key: prefix, value: String(value).trim() });
     return out;
   }
@@ -172,8 +233,17 @@ function collectFormFields(value, prefix = "", out = []) {
     value.default_value,
     value.selected,
     value.selected_label,
+    value.selected_value,
+    value.selected_text,
     value.choice,
-    value.text
+    value.choice_label,
+    value.option_label,
+    value.field_value,
+    value.display_value,
+    value.raw,
+    value.answer,
+    value.text,
+    value.content
   );
   if (maybeValue !== undefined) {
     const keys = [
@@ -188,15 +258,25 @@ function collectFormFields(value, prefix = "", out = []) {
   }
 
   Object.entries(value).forEach(([key, child]) => {
-    if (["value", "value_raw", "raw_value", "default_value", "selected", "selected_label", "choice", "text"].includes(key)) return;
+    if (FORM_VALUE_KEYS.has(key)) return;
     collectFormFields(child, `${prefix} ${key}`.trim(), out);
   });
   return out;
 }
 
 function readFormValue(body, aliases) {
-  const fields = collectFormFields(body);
   const normalizedAliases = aliases.map(normalizeFormKey);
+
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    for (const [key, value] of Object.entries(body)) {
+      const normalizedKey = normalizeFormKey(key);
+      if (!normalizedAliases.includes(normalizedKey)) continue;
+      const direct = formValueToText(value);
+      if (direct) return direct;
+    }
+  }
+
+  const fields = collectFormFields(body);
   const hasValue = (field) => String(field?.value || "").trim() !== "";
   const exact = fields.find((field) => hasValue(field) && normalizedAliases.includes(normalizeFormKey(field.key)));
   if (exact?.value) return exact.value;
@@ -409,6 +489,9 @@ function buildFormInitialMessage(formData, body) {
   }
 
   lines.push("Datos recibidos desde el formulario web:");
+  lines.push(`- Nombre: ${formData.name || "(no detectado)"}`);
+  lines.push(`- Email: ${formData.email || "(no detectado)"}`);
+  lines.push(`- Telefono: ${formData.whatsappPhone || formData.phone || "(no detectado)"}`);
   lines.push(`- Tipo de reforma: ${formData.workType || "(no detectado)"}`);
   lines.push(`- Codigo postal: ${formData.postalCode || "(no detectado)"}`);
 
@@ -1993,6 +2076,8 @@ app.post("/api/form", async (req, res) => {
       hasWorkType: Boolean(workType),
       postalCode: postalCode || null,
       workType: workType || null,
+      rawPostalCode: formValueToText(req.body?.postal_code || req.body?.codigo_postal || req.body?.cp).slice(0, 80) || null,
+      rawWorkType: formValueToText(req.body?.work_type || req.body?.tipo_reforma || req.body?.servicio).slice(0, 80) || null,
       bodyKeys: Object.keys(req.body || {}).slice(0, 20),
     });
 
