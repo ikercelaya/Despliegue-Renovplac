@@ -116,6 +116,43 @@ function normalizeTemplateParameterName(value) {
     .replace(/^_+|_+$/g, "");
 }
 
+function formValueToText(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "object") return String(value).trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => formValueToText(item))
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+  }
+
+  return firstNonEmptyValue(
+    value.value,
+    value.value_raw,
+    value.raw_value,
+    value.default_value,
+    value.selected,
+    value.selected_label,
+    value.choice,
+    value.label,
+    value.name,
+    value.title,
+    value.text
+  );
+}
+
+function firstNonEmptyValue(...values) {
+  let fallback = "";
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = formValueToText(value);
+    if (!fallback) fallback = text;
+    if (text) return text;
+  }
+  return fallback || undefined;
+}
+
 function collectFormFields(value, prefix = "", out = []) {
   if (value === null || value === undefined) return out;
   if (typeof value !== "object") {
@@ -128,7 +165,16 @@ function collectFormFields(value, prefix = "", out = []) {
     return out;
   }
 
-  const maybeValue = value.value ?? value.value_raw ?? value.raw_value ?? value.default_value;
+  const maybeValue = firstNonEmptyValue(
+    value.value,
+    value.value_raw,
+    value.raw_value,
+    value.default_value,
+    value.selected,
+    value.selected_label,
+    value.choice,
+    value.text
+  );
   if (maybeValue !== undefined) {
     const keys = [
       prefix,
@@ -142,7 +188,7 @@ function collectFormFields(value, prefix = "", out = []) {
   }
 
   Object.entries(value).forEach(([key, child]) => {
-    if (["value", "value_raw", "raw_value", "default_value"].includes(key)) return;
+    if (["value", "value_raw", "raw_value", "default_value", "selected", "selected_label", "choice", "text"].includes(key)) return;
     collectFormFields(child, `${prefix} ${key}`.trim(), out);
   });
   return out;
@@ -151,9 +197,11 @@ function collectFormFields(value, prefix = "", out = []) {
 function readFormValue(body, aliases) {
   const fields = collectFormFields(body);
   const normalizedAliases = aliases.map(normalizeFormKey);
-  const exact = fields.find((field) => normalizedAliases.includes(normalizeFormKey(field.key)));
+  const hasValue = (field) => String(field?.value || "").trim() !== "";
+  const exact = fields.find((field) => hasValue(field) && normalizedAliases.includes(normalizeFormKey(field.key)));
   if (exact?.value) return exact.value;
   const partial = fields.find((field) => {
+    if (!hasValue(field)) return false;
     const key = normalizeFormKey(field.key);
     return normalizedAliases.some((alias) => key.includes(alias) || alias.includes(key));
   });
@@ -409,17 +457,31 @@ function getFormTemplateParamValue(param, formData) {
     whatsapp: formData.whatsappPhone || formData.phone,
     postalcode: postalCode,
     codigopostal: postalCode,
+    codigopostalcliente: postalCode,
+    codigo: postalCode,
+    postal: postalCode,
+    postcode: postalCode,
+    zipcode: postalCode,
+    zona: postalCode,
     cp: postalCode,
     worktype: workType,
     tipotrabajo: workType,
     tiporeforma: workType,
     tipodeobra: workType,
+    tipo: workType,
+    servicio: workType,
+    obra: workType,
     reforma: workType,
     message: formData.message,
     mensaje: formData.message,
   };
   const value = values[key];
-  if (value === undefined || value === null || String(value).trim() === "") return "-";
+  if (value === undefined || value === null || String(value).trim() === "") {
+    if (["postalcode", "codigopostal", "codigopostalcliente", "codigo", "postal", "postcode", "zipcode", "zona", "cp"].includes(key)) return "tu zona";
+    if (["worktype", "tipotrabajo", "tiporeforma", "tipodeobra", "tipo", "servicio", "obra", "reforma"].includes(key)) return "tu reforma";
+    if (["name", "nombre", "nombrecliente", "firstname", "primernombre"].includes(key)) return firstName || "cliente";
+    return "-";
+  }
   return String(value).trim().slice(0, 900);
 }
 
