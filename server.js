@@ -932,18 +932,24 @@ function buildMissingBudgetContactReply(conv) {
   const missing = getMissingBudgetContactFields(conv);
   if (!missing.length) return "";
 
-  const labels = {
-    "nombre completo": "Nombre",
-    telefono: "Telefono",
-    email: "Email",
-    "codigo postal": "Codigo postal",
-  };
-  const lines = missing.map((field) => `${labels[field] || field}: ...`);
-  return [
-    "Estupendo. Para prepararte el presupuesto orientativo necesito completar tus datos de contacto.",
-    "",
-    ...lines,
-  ].join("\n");
+  const firstName = getFirstName(conv);
+  const prefix = firstName ? `${firstName}, ` : "";
+  const nextField = missing[0];
+
+  if (nextField === "nombre completo") {
+    return "Para poder continuar con el presupuesto y dejar tu solicitud bien registrada, dime tu nombre completo.";
+  }
+  if (nextField === "telefono") {
+    return `${prefix}ahora dime tu telefono movil con 9 cifras. Por ejemplo: 612 345 678.`;
+  }
+  if (nextField === "email") {
+    return `${prefix}ahora dime tu email. Te enviare ahi el enlace de confirmacion antes de mostrarte el presupuesto.`;
+  }
+  if (nextField === "codigo postal") {
+    return `${prefix}por ultimo, dime el codigo postal de la vivienda donde seria la reforma.`;
+  }
+
+  return "Necesito completar un dato de contacto para continuar con el presupuesto.";
 }
 
 function looksLikeInlineBudgetReply(text) {
@@ -953,6 +959,35 @@ function looksLikeInlineBudgetReply(text) {
   const hasBudgetLanguage = /\b(presupuesto|importe|precio|coste|estaria|seria|saldria|incluye|incluiria)\b/.test(normalized);
   const hasEuroAmount = /(?:\d{1,3}(?:[.\s]\d{3})+|\d{3,6})(?:[,.]\d{1,2})?\s*(?:€|eur|euros?)\b/i.test(raw);
   return hasBudgetLanguage && hasEuroAmount;
+}
+
+function looksLikeBlockedBudgetReply(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return false;
+  const normalized = normalizeLooseText(raw);
+  const hasBudgetLanguage = /\b(presupuesto|orientativo|importe|precio|coste|estaria|seria|saldria|incluye|incluiria|partidas?)\b/.test(normalized);
+  const amountPattern = "(?:\\d{1,3}(?:[.\\s]\\d{3})+|\\d{3,6})(?:[,\\.]\\d{1,2})?";
+  const hasEuroAmount = new RegExp(`${amountPattern}\\s*(?:\\u20ac|eur|euros?)\\b`, "i").test(raw);
+  const hasPriceRange = new RegExp(`\\bentre\\s+${amountPattern}\\s+(?:y|a|-)\\s+${amountPattern}`, "i").test(raw);
+  return looksLikeInlineBudgetReply(raw) || (hasBudgetLanguage && (hasEuroAmount || hasPriceRange));
+}
+
+function looksLikeBatchContactDataRequest(text) {
+  const normalized = normalizeLooseText(text);
+  if (!normalized) return false;
+  const fieldCount = [
+    /\bnombre\b/.test(normalized),
+    /\b(telefono|movil|whatsapp|numero)\b/.test(normalized),
+    /\b(email|correo|e-mail)\b/.test(normalized),
+    /\b(codigo postal|cp)\b/.test(normalized),
+  ].filter(Boolean).length;
+  return fieldCount >= 2 && /\b(dato|contacto|presupuesto|preparar)\b/.test(normalized);
+}
+
+function looksLikeOwnerPermissionQuestion(text) {
+  const normalized = normalizeLooseText(text);
+  if (!normalized) return false;
+  return /\b(propietar|permiso|duen|dueno|titular)\b/.test(normalized);
 }
 
 function looksLikeBudgetPreparationPromise(text) {
@@ -1006,6 +1041,51 @@ function assertBudgetCanBeCreated(input, conv) {
   if (amount < MIN_BUDGET_AMOUNT_EUR) {
     throw new Error(
       `El importe calculado (${amount || 0} EUR) está por debajo del mínimo de obra de ${MIN_BUDGET_AMOUNT_EUR} EUR. No generes presupuesto; explica el mínimo y pregunta si quiere agrupar más trabajos.`
+    );
+  }
+}
+
+function buildPreBudgetGuardReplyStrict(conv) {
+  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
+  if (permissionStatus === "denied") return ownerPermissionDeniedMessage();
+
+  const contactReply = buildMissingBudgetContactReply(conv);
+  if (contactReply) return contactReply;
+
+  if (permissionStatus !== "confirmed") {
+    return "Antes de enviarte la confirmacion por email necesito comprobar una cosa: eres propietario o tienes permiso del dueno para hacer la reforma?";
+  }
+
+  return (
+    "Ya tengo la informacion principal. Para mostrarte el presupuesto orientativo te enviare primero un enlace de confirmacion al email. " +
+    "Cuando lo abras, el presupuesto aparecera en este chat."
+  );
+}
+
+function assertBudgetCanBeCreatedStrict(input, conv) {
+  const missingContact = getMissingBudgetContactFields(conv);
+  if (missingContact.length) {
+    throw new Error(
+      `Antes de crear el presupuesto debes pedir solo este dato de contacto que falta: ${missingContact[0]}. No pidas todos los datos juntos.`
+    );
+  }
+
+  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
+  if (permissionStatus === "denied") {
+    throw new Error(
+      "El cliente ha indicado que no es propietario ni tiene permiso. No generes presupuesto; explicalo con educacion."
+    );
+  }
+  if (permissionStatus !== "confirmed") {
+    throw new Error(
+      "Antes de crear el presupuesto debes preguntar si el cliente es propietario o tiene permiso del dueno para hacer la reforma."
+    );
+  }
+
+  const amount = Number(input?.amount_eur) || 0;
+  if (amount < MIN_BUDGET_AMOUNT_EUR) {
+    throw new Error(
+      `El importe calculado (${amount || 0} EUR) esta por debajo del minimo de obra de ${MIN_BUDGET_AMOUNT_EUR} EUR. No generes presupuesto; explica el minimo y pregunta si quiere agrupar mas trabajos.`
     );
   }
 }
@@ -1525,7 +1605,7 @@ async function sendBudgetToWhatsapp(conv, budget, options = {}) {
 }
 
 async function createConversationBudget(input, conv, fullConv) {
-  assertBudgetCanBeCreated(input, fullConv);
+  assertBudgetCanBeCreatedStrict(input, fullConv);
   if (!normalizeEmail(conv.customer_email)) {
     throw new Error("Falta email del cliente. Pide un email valido antes de generar el presupuesto.");
   }
@@ -2188,7 +2268,7 @@ app.post("/api/chat", async (req, res) => {
         systemPrompt,
         messages: history,
         onBudget: async (input) => {
-          assertBudgetCanBeCreated(input, conv);
+          assertBudgetCanBeCreatedStrict(input, conv);
           if (!normalizeEmail(conv.customer_email)) {
             throw new Error("Falta email del cliente. Pide un email válido antes de generar el presupuesto.");
           }
@@ -2262,8 +2342,13 @@ app.post("/api/chat", async (req, res) => {
         } else {
           botReply = addBudgetAcceptanceHint(botReply, true);
         }
-      } else if (looksLikeInlineBudgetReply(botReply)) {
-        botReply = buildPreBudgetGuardReply(conv);
+      } else if (
+        looksLikeBlockedBudgetReply(botReply) ||
+        looksLikeBudgetPreparationPromise(botReply) ||
+        looksLikeBatchContactDataRequest(botReply) ||
+        (getMissingBudgetContactFields(conv).length && looksLikeOwnerPermissionQuestion(botReply))
+      ) {
+        botReply = buildPreBudgetGuardReplyStrict({ ...conv, messages: conv.messages || [] });
       }
 
       if (botReply) {
@@ -2784,7 +2869,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  res.sendStatus(200);
+  const finish = (status = 200) => {
+    if (!res.headersSent) res.sendStatus(status);
+  };
 
   try {
     if (process.env.WHATSAPP_APP_SECRET) {
@@ -3121,8 +3208,13 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           `Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.`;
         botReply = (botReply ? botReply + "\n" : "") + card;
       }
-    } else if (looksLikeInlineBudgetReply(botReply) || looksLikeBudgetPreparationPromise(botReply)) {
-      botReply = buildPreBudgetGuardReply(fullConv);
+    } else if (
+      looksLikeBlockedBudgetReply(botReply) ||
+      looksLikeBudgetPreparationPromise(botReply) ||
+      looksLikeBatchContactDataRequest(botReply) ||
+      (getMissingBudgetContactFields(fullConv).length && looksLikeOwnerPermissionQuestion(botReply))
+    ) {
+      botReply = buildPreBudgetGuardReplyStrict(fullConv);
     }
 
     if (botReply) {
@@ -3140,6 +3232,8 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     }
   } catch (err) {
     console.error("[whatsapp/webhook]", err);
+  } finally {
+    finish();
   }
 });
 
