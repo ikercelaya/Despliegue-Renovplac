@@ -167,6 +167,10 @@ function normalizePostalCode(value) {
   return /^(0[1-9]|[1-4]\d|5[0-2])\d{3}$/.test(cp) ? cp : "";
 }
 
+function isReliablePhoneDigits(value) {
+  return /^(?:34)?[6-9]\d{8}$/.test(String(value || "").replace(/\D/g, ""));
+}
+
 function readPostalCodeFromForm(body, phone) {
   const direct = normalizePostalCode(readFormValue(body, [
     "postal_code",
@@ -192,7 +196,8 @@ function readPostalCodeFromForm(body, phone) {
   ]));
   if (direct) return direct;
 
-  const phoneDigits = String(phone || "").replace(/\D/g, "");
+  const rawPhoneDigits = String(phone || "").replace(/\D/g, "");
+  const phoneDigits = isReliablePhoneDigits(rawPhoneDigits) ? rawPhoneDigits : "";
   const fields = collectFormFields(body);
   const keyed = fields.find((field) => {
     const key = normalizeFormKey(field.key);
@@ -204,20 +209,37 @@ function readPostalCodeFromForm(body, phone) {
     const cp = normalizePostalCode(field.value);
     if (!cp) return false;
     const digits = String(field.value || "").replace(/\D/g, "");
-    return digits !== phoneDigits && !phoneDigits.includes(cp);
+    return digits !== phoneDigits && (!phoneDigits || !phoneDigits.includes(cp));
   });
   if (loose) return normalizePostalCode(loose.value);
 
   const serialized = JSON.stringify(body || {});
   const matches = [...serialized.matchAll(/\b(0[1-9]|[1-4]\d|5[0-2])\d{3}\b/g)]
     .map((match) => match[0]);
-  const fallback = matches.find((cp) => !phoneDigits.includes(cp));
+  const fallback = matches.find((cp) => !phoneDigits || !phoneDigits.includes(cp));
   return fallback || "";
 }
 
 function isPlaceholderFormValue(value) {
   const text = normalizeFormKey(value);
   return !text || /^(seleccionaunaopcion|seleccioneunaopcion|eligeunaopcion|opcion|none|null|undefined)$/.test(text);
+}
+
+function inferWorkTypeFromText(value) {
+  const text = normalizeLooseText(value);
+  if (!text || isPlaceholderFormValue(text)) return "";
+  if (/\b(reforma integral|vivienda completa|casa completa|piso completo)\b/.test(text)) return "Reforma integral";
+  if (/\b(bano|banos|ducha|sanitario|sanitarios|mampara|aseo)\b/.test(text)) return "Baño completo";
+  if (/\b(cocina|cocinas)\b/.test(text)) return "Cocina";
+  if (/\b(piscina|piscinas|depuradora|gresite)\b/.test(text)) return "Piscina";
+  if (/\b(pladur|falso techo|trasdosado|tabique)\b/.test(text)) return "Pladur";
+  if (/\b(pintura|pintar)\b/.test(text)) return "Pintura";
+  if (/\b(fachada|fachadas|monocapa)\b/.test(text)) return "Fachada";
+  if (/\b(terraza|patio|exterior|exteriores)\b/.test(text)) return "Terraza";
+  if (/\b(suelo|suelos|pavimento|porcelanico|solado)\b/.test(text)) return "Suelo o pavimento";
+  if (/\b(local comercial|local)\b/.test(text)) return "Local comercial";
+  if (/\b(comunidad|comunidades|propietarios)\b/.test(text)) return "Comunidad";
+  return "";
 }
 
 function readWorkTypeFromForm(body) {
@@ -241,13 +263,17 @@ function readWorkTypeFromForm(body) {
     "selecciona una opcion",
     "selecciona una opción",
   ]).trim();
-  if (direct && !isPlaceholderFormValue(direct)) return normalizeWorkType(direct) || direct;
+  if (direct && !isPlaceholderFormValue(direct)) {
+    return inferWorkTypeFromText(direct) || normalizeWorkType(direct) || direct;
+  }
 
   const fields = collectFormFields(body);
   for (const field of fields) {
     const value = String(field.value || "").trim();
     if (!value || isPlaceholderFormValue(value)) continue;
     if (normalizeEmail(value) || normalizePostalCode(value) || normalizePhoneForWhatsapp(value)) continue;
+    const inferred = inferWorkTypeFromText(`${field.key} ${value}`);
+    if (inferred) return inferred;
     const normalized = normalizeWorkType(value);
     if (normalized && normalizeFormKey(normalized) !== normalizeFormKey(value)) return normalized;
     const loose = normalizeLooseText(value);
@@ -255,6 +281,9 @@ function readWorkTypeFromForm(body) {
       return normalized || value;
     }
   }
+
+  const inferredSerialized = inferWorkTypeFromText(JSON.stringify(body || ""));
+  if (inferredSerialized) return inferredSerialized;
 
   const serialized = normalizeLooseText(JSON.stringify(body || {}));
   const known = [
@@ -313,9 +342,60 @@ function buildFormLeadSummary({ name, email, phone, whatsappPhone, postalCode, w
   ].join("\n");
 }
 
+function isUsefulFormSnapshotField(field) {
+  const key = normalizeFormKey(field?.key);
+  const value = String(field?.value || "").replace(/\s+/g, " ").trim();
+  if (!key || !value || value.length > 180) return false;
+  if (/(secret|token|captcha|recaptcha|nonce|submit|page|url|ip|useragent|browser|fecha|date|time|formid|entryid)/.test(key)) {
+    return false;
+  }
+  if (/^(on|off|true|false|null|undefined|0|1)$/i.test(value)) return false;
+  return true;
+}
+
+function buildFormInitialMessage(formData, body) {
+  const lines = [];
+  if (formData.message) {
+    lines.push(`Mensaje del cliente: ${formData.message}`);
+    lines.push("");
+  }
+
+  lines.push("Datos recibidos desde el formulario web:");
+  lines.push(`- Tipo de reforma: ${formData.workType || "(no detectado)"}`);
+  lines.push(`- Codigo postal: ${formData.postalCode || "(no detectado)"}`);
+
+  const snapshot = [];
+  const seen = new Set();
+  for (const field of collectFormFields(body)) {
+    if (!isUsefulFormSnapshotField(field)) continue;
+    const key = String(field.key || "").replace(/\s+/g, " ").trim().slice(0, 70);
+    const value = String(field.value || "").replace(/\s+/g, " ").trim().slice(0, 100);
+    const id = `${normalizeFormKey(key)}:${normalizeFormKey(value)}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    snapshot.push(`${key}: ${value}`);
+    if (snapshot.length >= 10) break;
+  }
+  if (snapshot.length) {
+    lines.push("");
+    lines.push("Campos detectados:");
+    snapshot.forEach((item) => lines.push(`- ${item}`));
+  }
+
+  return lines.join("\n");
+}
+
 function getFormTemplateParamValue(param, formData) {
   const key = normalizeFormKey(param);
   const firstName = String(formData.name || "").trim().split(/\s+/)[0] || "cliente";
+  const postalCode =
+    formData.postalCode ||
+    normalizePostalCode(formData.message) ||
+    normalizePostalCode(formData.initialMessage);
+  const workType =
+    formData.workType ||
+    inferWorkTypeFromText(formData.message) ||
+    inferWorkTypeFromText(formData.initialMessage);
   const values = {
     name: formData.name,
     nombre: formData.name,
@@ -327,14 +407,14 @@ function getFormTemplateParamValue(param, formData) {
     phone: formData.whatsappPhone || formData.phone,
     telefono: formData.whatsappPhone || formData.phone,
     whatsapp: formData.whatsappPhone || formData.phone,
-    postalcode: formData.postalCode,
-    codigopostal: formData.postalCode,
-    cp: formData.postalCode,
-    worktype: formData.workType,
-    tipotrabajo: formData.workType,
-    tiporeforma: formData.workType,
-    tipodeobra: formData.workType,
-    reforma: formData.workType,
+    postalcode: postalCode,
+    codigopostal: postalCode,
+    cp: postalCode,
+    worktype: workType,
+    tipotrabajo: workType,
+    tiporeforma: workType,
+    tipodeobra: workType,
+    reforma: workType,
     message: formData.message,
     mensaje: formData.message,
   };
@@ -1769,6 +1849,8 @@ app.post("/api/form", async (req, res) => {
       hasPhone: Boolean(phone),
       hasPostalCode: Boolean(postalCode),
       hasWorkType: Boolean(workType),
+      postalCode: postalCode || null,
+      workType: workType || null,
       bodyKeys: Object.keys(req.body || {}).slice(0, 20),
     });
 
@@ -1786,6 +1868,8 @@ app.post("/api/form", async (req, res) => {
       workType,
       message,
     };
+    const initialMessage = buildFormInitialMessage(formData, req.body);
+    formData.initialMessage = initialMessage;
     const token = generateToken();
     const { data: conv, error } = await supabase
       .from("bot_conversations")
@@ -1795,7 +1879,7 @@ app.post("/api/form", async (req, res) => {
         customer_phone: whatsappPhone || phone || null,
         customer_postal_code: postalCode || null,
         work_type: workType || null,
-        initial_message: message || null,
+        initial_message: initialMessage || null,
         source: "form",
         channel: whatsappPhone ? "whatsapp" : null,
         access_token: token,
