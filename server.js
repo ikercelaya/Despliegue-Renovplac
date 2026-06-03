@@ -46,7 +46,10 @@ app.use(express.json({
   limit: "8mb",
   verify: (req, _res, buf) => { req.rawBody = buf; },
 }));
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({
+  extended: true,
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use((req, res, next) => {
@@ -295,11 +298,42 @@ function normalizePostalCode(value) {
   return /^(0[1-9]|[1-4]\d|5[0-2])\d{3}$/.test(cp) ? cp : "";
 }
 
+function rawBodyToText(rawBody) {
+  if (!rawBody) return "";
+  const raw = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody || "");
+  if (!raw.trim()) return "";
+  const plusAsSpace = raw.replace(/\+/g, " ");
+  try {
+    return decodeURIComponent(plusAsSpace);
+  } catch {
+    return plusAsSpace;
+  }
+}
+
+function readPostalCodeFromRawForm(rawBody, phone) {
+  const text = rawBodyToText(rawBody);
+  if (!text) return "";
+
+  const phoneDigits = isReliablePhoneDigits(phone) ? String(phone || "").replace(/\D/g, "") : "";
+  const matches = [...text.matchAll(/\b(0[1-9]|[1-4]\d|5[0-2])\d{3}\b/g)].map((match) => match[0]);
+  if (!matches.length) return "";
+
+  const withPostalContext = matches.find((cp) => {
+    if (phoneDigits && phoneDigits.includes(cp)) return false;
+    const index = text.indexOf(cp);
+    const around = normalizeLooseText(text.slice(Math.max(0, index - 90), index + 90));
+    return /\b(cp|codigo postal|codigopostal|postal code|postalcode|postcode|zip)\b/.test(around);
+  });
+  if (withPostalContext) return withPostalContext;
+
+  return matches.find((cp) => !phoneDigits || !phoneDigits.includes(cp)) || "";
+}
+
 function isReliablePhoneDigits(value) {
   return /^(?:34)?[6-9]\d{8}$/.test(String(value || "").replace(/\D/g, ""));
 }
 
-function readPostalCodeFromForm(body, phone) {
+function readPostalCodeFromForm(body, phone, rawBody) {
   const direct = normalizePostalCode(readFormValue(body, [
     "postal_code",
     "postal code",
@@ -345,7 +379,7 @@ function readPostalCodeFromForm(body, phone) {
   const matches = [...serialized.matchAll(/\b(0[1-9]|[1-4]\d|5[0-2])\d{3}\b/g)]
     .map((match) => match[0]);
   const fallback = matches.find((cp) => !phoneDigits || !phoneDigits.includes(cp));
-  return fallback || "";
+  return fallback || readPostalCodeFromRawForm(rawBody, phone);
 }
 
 function isPlaceholderFormValue(value) {
@@ -370,7 +404,13 @@ function inferWorkTypeFromText(value) {
   return "";
 }
 
-function readWorkTypeFromForm(body) {
+function readWorkTypeFromRawForm(rawBody) {
+  const text = rawBodyToText(rawBody);
+  if (!text) return "";
+  return inferWorkTypeFromText(text);
+}
+
+function readWorkTypeFromForm(body, rawBody) {
   const direct = readFormValue(body, [
     "work_type",
     "work type",
@@ -429,7 +469,8 @@ function readWorkTypeFromForm(body) {
     "local comercial",
     "comunidad",
   ].find((item) => serialized.includes(normalizeLooseText(item)));
-  return known ? (normalizeWorkType(known) || known) : "";
+  if (known) return normalizeWorkType(known) || known;
+  return readWorkTypeFromRawForm(rawBody);
 }
 
 function normalizePhoneForWhatsapp(value) {
@@ -924,20 +965,21 @@ function parseOwnerPermissionAnswer(message, askedRecently = false) {
   const text = normalizeLooseText(message);
   if (!text) return "unknown";
 
+  const mentionsPermissionTopic = /\b(propietari[oa]|duen[oa]|dueno|duena|permiso|autorizacion|titular)\b/.test(text);
   const hasPositivePermission =
-    /\b(si|claro|correcto|por supuesto|ok|vale)\b.{0,30}\b(tengo|cuento|dispongo|soy)\b/.test(text) ||
     /\bsoy\s+(el\s+|la\s+)?(propietario|propietaria|dueno|duena)\b/.test(text) ||
     /\bes\s+(mi|mio|mia|nuestra|nuestro)\s+(casa|vivienda|piso|local|propiedad)\b/.test(text) ||
     /\b(si\s+)?(tengo|cuento\s+con|dispongo\s+de|me\s+han\s+dado|me\s+han\s+autorizado)\b.{0,30}\b(permiso|autorizacion)\b/.test(text);
 
   const hasNegativePermission =
-    /\b(no\s+(tengo|cuento|dispongo)|sin\s+(permiso|autorizacion)|no\s+me\s+han\s+(dado|autorizado))\b/.test(text) ||
+    /\b(no\s+(tengo|cuento|dispongo)\b.{0,35}\b(permiso|autorizacion)|sin\s+(permiso|autorizacion)|no\s+me\s+han\s+(dado|autorizado)\b.{0,35}\b(permiso|autorizacion))\b/.test(text) ||
+    /\bno\s+soy\s+(propietario|propietaria|dueno|duena)\b/.test(text) ||
     /\bno\s+soy\s+(propietario|propietaria|dueno|duena)\b.{0,40}\b(ni|y\s+no|tampoco)\b.{0,30}\b(permiso|autorizacion)\b/.test(text);
 
   if (hasPositivePermission && !hasNegativePermission) return "confirmed";
-  if (hasNegativePermission) return "denied";
-  if (askedRecently && /^(no|nop|negativo)\b/.test(text)) return "denied";
-  if (askedRecently && /^(si|claro|correcto|por supuesto|ok|vale)\b/.test(text)) return "confirmed";
+  if (hasNegativePermission && mentionsPermissionTopic) return "denied";
+  if (askedRecently && /^(no|nop|negativo)\s*[.!?]*$/.test(text)) return "denied";
+  if (askedRecently && /^(si|claro|correcto|por supuesto|ok|vale)\s*[.!?]*$/.test(text)) return "confirmed";
   return "unknown";
 }
 
@@ -967,6 +1009,34 @@ function ownerPermissionDeniedMessage() {
     "Lo entiendo. En ese caso no puedo prepararte un presupuesto, porque necesitamos que seas propietario " +
     "o tengas permiso del dueño para valorar la reforma.\n\n" +
     "Si más adelante tienes esa autorización, estaré encantado de ayudarte con el presupuesto."
+  );
+}
+
+function isNoPhotoStatement(message) {
+  const text = normalizeLooseText(message);
+  if (!text) return false;
+  const mentionsPhoto = /\b(foto|fotos|imagen|imagenes|adjuntar|adjunto|enviar|mandar)\b/.test(text);
+  if (!mentionsPhoto) return false;
+  return (
+    /\b(no\s+tengo|no\s+dispongo|no\s+puedo|ahora\s+no|sin\s+foto|sin\s+fotos|no\s+la\s+tengo|no\s+las\s+tengo)\b/.test(text) ||
+    /\b(mas\s+tarde|luego|despues)\b.{0,35}\b(foto|fotos|imagen|imagenes)\b/.test(text)
+  );
+}
+
+function looksLikeNoPhotoPermissionConfusion(reply, userMessage) {
+  if (!isNoPhotoStatement(userMessage)) return false;
+  const text = normalizeLooseText(reply);
+  return /\bno\s+puedo\b.{0,120}\b(presupuesto|prepararte|valorarlo|valorar)\b/.test(text) &&
+    /\b(propietari|permiso|duen|autorizacion)\b/.test(text);
+}
+
+function buildNoPhotoContinueReply(conv) {
+  const firstName = getFirstName(conv);
+  const prefix = firstName ? `${firstName}, ` : "";
+  return (
+    `${prefix}no pasa nada si ahora no tienes fotos. Puedo orientarte con los datos que me des, ` +
+    "pero el presupuesto sera menos preciso y el equipo tendra que revisarlo despues con mas detalle.\n\n" +
+    "Dime el plazo aproximado que tienes en mente para empezar la reforma y seguimos."
   );
 }
 
@@ -2064,8 +2134,8 @@ app.post("/api/form", async (req, res) => {
     const name = readFormValue(req.body, ["name", "nombre", "nombre y apellido", "nombre y apellidos", "nombre completo"]).trim();
     const email = normalizeEmail(readFormValue(req.body, ["email", "correo", "correo electronico", "e-mail"]));
     const phone = readFormValue(req.body, ["phone", "telefono", "telefono movil", "movil", "whatsapp"]).trim();
-    const postalCode = readPostalCodeFromForm(req.body, phone);
-    const workType = readWorkTypeFromForm(req.body);
+    const postalCode = readPostalCodeFromForm(req.body, phone, req.rawBody);
+    const workType = readWorkTypeFromForm(req.body, req.rawBody);
     const message = readFormValue(req.body, ["message", "mensaje", "comentarios", "descripcion", "observaciones"]).trim();
 
     console.log("[form] solicitud recibida", {
@@ -2078,6 +2148,8 @@ app.post("/api/form", async (req, res) => {
       workType: workType || null,
       rawPostalCode: formValueToText(req.body?.postal_code || req.body?.codigo_postal || req.body?.cp).slice(0, 80) || null,
       rawWorkType: formValueToText(req.body?.work_type || req.body?.tipo_reforma || req.body?.servicio).slice(0, 80) || null,
+      rawFallbackHasPostalCode: Boolean(readPostalCodeFromRawForm(req.rawBody, phone)),
+      rawFallbackWorkType: readWorkTypeFromRawForm(req.rawBody) || null,
       bodyKeys: Object.keys(req.body || {}).slice(0, 20),
     });
 
@@ -2434,6 +2506,9 @@ app.post("/api/chat", async (req, res) => {
         (getMissingBudgetContactFields(conv).length && looksLikeOwnerPermissionQuestion(botReply))
       ) {
         botReply = buildPreBudgetGuardReplyStrict({ ...conv, messages: conv.messages || [] });
+      }
+      if (!createdBudget && looksLikeNoPhotoPermissionConfusion(botReply, userMessage)) {
+        botReply = buildNoPhotoContinueReply(conv);
       }
 
       if (botReply) {
@@ -3300,6 +3375,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       (getMissingBudgetContactFields(fullConv).length && looksLikeOwnerPermissionQuestion(botReply))
     ) {
       botReply = buildPreBudgetGuardReplyStrict(fullConv);
+    }
+    if (!result.budget && looksLikeNoPhotoPermissionConfusion(botReply, userMessage)) {
+      botReply = buildNoPhotoContinueReply(fullConv);
     }
 
     if (botReply) {
