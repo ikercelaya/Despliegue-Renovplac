@@ -23,7 +23,8 @@ const PUBLIC_URL = getPublicUrl();
 const DEFAULT_ADMIN_PASSWORD = "Renovepl@c1234";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD;
 const FORM_SECRET = process.env.FORM_SECRET || "";
-const COMPANY_EMAIL = "contacto@renoveplac.com";
+const COMPANY_EMAIL = process.env.COMPANY_EMAIL || "romeroluis2001@gmail.com";
+const BUDGET_ACCEPTED_EMAIL = process.env.BUDGET_ACCEPTED_EMAIL || "romeroluis2001@gmail.com";
 const ADMIN_RECOVERY_EMAIL = process.env.ADMIN_RECOVERY_EMAIL || COMPANY_EMAIL;
 const HUMAN_HANDOFF_EMAIL = process.env.HUMAN_HANDOFF_EMAIL || COMPANY_EMAIL;
 const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
@@ -390,15 +391,16 @@ function isPlaceholderFormValue(value) {
 function inferWorkTypeFromText(value) {
   const text = normalizeLooseText(value);
   if (!text || isPlaceholderFormValue(text)) return "";
+  const hasSpecificWorkSignal = /\b(reforma integral|vivienda completa|casa completa|piso completo|bano|banos|ducha|duchas|plato de ducha|sanitario|sanitarios|mampara|aseo|inodoro|lavabo|alicatado|alicatar|azulejo|azulejos|fontaneria|desague|desagues|cocina|cocinas|piscina|piscinas|depuradora|gresite|pladur|falso techo|trasdosado|tabique|fachada|fachadas|monocapa|terraza|patio|exterior|exteriores|suelo|suelos|pavimento|porcelanico|solado|local comercial|local|comunidad|comunidades)\b/.test(text);
   if (/\b(reforma integral|vivienda completa|casa completa|piso completo)\b/.test(text)) return "Reforma integral";
-  if (/\b(bano|banos|ducha|sanitario|sanitarios|mampara|aseo)\b/.test(text)) return "Baño completo";
+  if (/\b(bano|banos|ducha|duchas|plato de ducha|sanitario|sanitarios|mampara|aseo|inodoro|lavabo|alicatado|alicatar|azulejo|azulejos|fontaneria|desague|desagues)\b/.test(text)) return "Baño completo";
   if (/\b(cocina|cocinas)\b/.test(text)) return "Cocina";
   if (/\b(piscina|piscinas|depuradora|gresite)\b/.test(text)) return "Piscina";
   if (/\b(pladur|falso techo|trasdosado|tabique)\b/.test(text)) return "Pladur";
-  if (/\b(pintura|pintar)\b/.test(text)) return "Pintura";
   if (/\b(fachada|fachadas|monocapa)\b/.test(text)) return "Fachada";
   if (/\b(terraza|patio|exterior|exteriores)\b/.test(text)) return "Terraza";
   if (/\b(suelo|suelos|pavimento|porcelanico|solado)\b/.test(text)) return "Suelo o pavimento";
+  if (/\b(pintura|pintar)\b/.test(text) && !hasSpecificWorkSignal) return "Pintura";
   if (/\b(local comercial|local)\b/.test(text)) return "Local comercial";
   if (/\b(comunidad|comunidades|propietarios)\b/.test(text)) return "Comunidad";
   return "";
@@ -2730,7 +2732,7 @@ app.post("/api/budget/:id/accept", async (req, res) => {
     ].join("\n");
 
     await safeSendEmail({
-      to: COMPANY_EMAIL,
+      to: BUDGET_ACCEPTED_EMAIL,
       replyTo: conv.customer_email || undefined,
       subject: `Presupuesto aceptado — ${conv.customer_name || "lead"} — ${budget.amount_eur} EUR`,
       text: summary,
@@ -2995,7 +2997,7 @@ async function acceptBudgetInternal(budgetId) {
     `Conversación completa: ${PUBLIC_URL}/admin#${conv.id}`,
   ].join("\n");
   await safeSendEmail({
-    to: COMPANY_EMAIL,
+    to: BUDGET_ACCEPTED_EMAIL,
     replyTo: conv.customer_email || undefined,
     subject: `Presupuesto aceptado — ${conv.customer_name || "lead"} — ${budget.amount_eur} EUR`,
     text: summary,
