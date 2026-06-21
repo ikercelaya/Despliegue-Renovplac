@@ -1054,6 +1054,71 @@ function isHumanHandoffRequest(message) {
   );
 }
 
+function hasAppointmentTimeReference(text) {
+  return (
+    /\b(hoy|manana|pasado manana|esta manana|esta tarde|esta noche|lunes|martes|miercoles|jueves|viernes|sabado|domingo|finde|fin de semana)\b/.test(text) ||
+    /\b(?:a|sobre)\s+las?\s+\d{1,2}(?::\d{2})?\b/.test(text) ||
+    /\b\d{1,2}:\d{2}\b/.test(text) ||
+    /\b(?:[01]?\d|2[0-3])\s*h\b/.test(text) ||
+    /\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/.test(text)
+  );
+}
+
+function looksLikeAppointmentSchedulingReply(reply) {
+  const text = normalizeLooseText(reply);
+  if (!text) return false;
+
+  const delegatesToLuis =
+    /\bluis\b.{0,120}\b(se pondra en contacto|contactara|te llamara|coordinara|coordinar|agendar)\b/.test(text) ||
+    /\b(se pondra en contacto|contactara|te llamara)\b.{0,120}\bluis\b/.test(text);
+  const refusesScheduling =
+    /\b(no puedo|no podemos)\b.{0,90}\b(cerrar|confirmar|agendar|reservar|programar)\b.{0,50}\b(cita|horario|hora|visita)\b/.test(text);
+  if (delegatesToLuis || refusesScheduling) return false;
+
+  const claimsAppointment =
+    /\b(nos vemos|quedamos|te veo|os veo|me paso|nos pasamos|pasamos|iremos|puedo ir|podemos ir|te visitamos)\b/.test(text);
+  const movementAppointment =
+    /\b(voy|vamos)\b.{0,35}\b(ir|pasar|verlo|visitar|casa|obra|vivienda|piso|local)\b/.test(text);
+  const directConfirmation =
+    /\b(cita|visita)\b.{0,45}\b(confirmada|agendada|cerrada|reservada|programada)\b/.test(text);
+  const proposesSlot =
+    /\b(te va bien|os va bien|puedes|podrias|podeis|podemos|tienes disponibilidad|te encaja)\b.{0,90}\b(a las|hoy|manana|esta tarde|esta manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|hora)\b/.test(text);
+  const timedScheduling = hasAppointmentTimeReference(text) &&
+    /\b(cita|visita|quedar|quedamos|paso|pasamos|voy|vamos|iremos|puedo ir|podemos ir)\b/.test(text);
+
+  return claimsAppointment || movementAppointment || directConfirmation || proposesSlot || timedScheduling;
+}
+
+function isAppointmentSchedulingRequest(message, messages = []) {
+  const text = normalizeLooseText(message);
+  if (!text) return false;
+  if (/\b(no quiero|no necesito|no hace falta|sin)\b.{0,30}\b(cita|visita)\b/.test(text)) return false;
+
+  const asksAppointment =
+    /\b(cita|visita)\b/.test(text) &&
+    /\b(quiero|necesito|pedir|solicitar|agendar|agenda|programar|concertar|reservar|cerrar|quedar|quedamos|cuando|hora|horario|dia|venir|venis|vengais|pasar|podeis|podemos|podrias|puedes|puede)\b/.test(text);
+  const explicitSchedule =
+    /\b(agendar|agenda|programar|concertar|reservar|cerrar)\b.{0,45}\b(cita|visita|hora|horario|dia|llamada)\b/.test(text);
+  const asksSchedulingContact =
+    /\b(agendar|agenda|programar|concertar|reservar|cerrar)\b/.test(text) &&
+    /\b(luis|llamar|llamen|contactar|contacte|contacto|visita|cita|hora|horario|dia)\b/.test(text);
+  const asksVisitToProperty =
+    /\b(podeis|podemos|podrias|puedes|puede|venis|vengais|pasais|pasar|venir)\b.{0,60}\b(verlo|ver la obra|tomar medidas|presupuestar|casa|vivienda|piso|local)\b/.test(text);
+  const asksWhenCanVisit =
+    /\b(cuando|que dia|a que hora|disponibilidad|hueco|fecha|fechas)\b.{0,70}\b(podeis|podemos|podrias|puedes|puede|venis|vengais|pasais|pasar|venir|visita|cita)\b/.test(text) ||
+    /\b(podeis|podemos|podrias|puedes|puede|venis|vengais|pasais|pasar|venir|visita|cita)\b.{0,70}\b(cuando|que dia|a que hora|disponibilidad|hueco|fecha|fechas)\b/.test(text);
+  const proposesSlot =
+    hasAppointmentTimeReference(text) &&
+    /\b(cita|visita|quedar|quedamos|venir|venis|vengais|pasar|pasais|podeis|podemos|te espero|os espero)\b/.test(text);
+
+  const lastAssistant = getLastAssistantText(messages);
+  const confirmsPreviousSlot =
+    looksLikeAppointmentSchedulingReply(lastAssistant) &&
+    (hasAppointmentTimeReference(text) || /^(si|vale|ok|perfecto|correcto|confirmo|me va bien|de acuerdo)\b/.test(text));
+
+  return asksAppointment || explicitSchedule || asksSchedulingContact || asksVisitToProperty || asksWhenCanVisit || proposesSlot || confirmsPreviousSlot;
+}
+
 function buildHumanHandoffOfferMessage(conv) {
   const firstName = getFirstName(conv);
   const prefix = firstName ? `Entendido, ${firstName}. ` : "Entendido. ";
@@ -1069,6 +1134,18 @@ function buildHumanHandoffConfirmedMessage(conv) {
   return (
     prefix +
     "He avisado a Luis, de Renoveplac. El bot queda pausado para que una persona del equipo pueda revisar esta conversacion y responderte lo antes posible."
+  );
+}
+
+function buildAppointmentSchedulingReply(conv, options = {}) {
+  const firstName = getFirstName(conv);
+  const prefix = firstName ? `${firstName}, ` : "";
+  const notice = options.notified
+    ? "le he dejado aviso a Luis, de Renoveplac. "
+    : "";
+  return (
+    `${prefix}${notice}yo no puedo cerrar citas ni confirmar horarios desde el chat. ` +
+    "Luis se pondra en contacto contigo para agendar la visita y confirmar dia y hora."
   );
 }
 
@@ -2047,7 +2124,7 @@ async function requestHumanHandoff(conv, options = {}) {
   const sendResult = await safeSendEmail({
     to: HUMAN_HANDOFF_EMAIL,
     replyTo: conv.customer_email || undefined,
-    subject: `Cliente solicita humano - ${conv.customer_name || conv.customer_phone || "lead Renoveplac"}`,
+    subject: options.subject || `Cliente solicita humano - ${conv.customer_name || conv.customer_phone || "lead Renoveplac"}`,
     text,
   }, "human_handoff");
 
@@ -2063,7 +2140,7 @@ async function requestHumanHandoff(conv, options = {}) {
     .eq("id", conv.id);
   if (pauseError) throw pauseError;
 
-  const reply = buildHumanHandoffConfirmedMessage(conv);
+  const reply = options.reply || buildHumanHandoffConfirmedMessage(conv);
   const { data: assistantMsgRow, error: msgError } = await supabase
     .from("bot_messages")
     .insert({
@@ -2076,6 +2153,14 @@ async function requestHumanHandoff(conv, options = {}) {
   if (msgError) throw msgError;
 
   return { assistantMsgRow, reply };
+}
+
+async function requestAppointmentSchedulingHandoff(conv) {
+  return requestHumanHandoff(conv, {
+    reason: "El cliente pide agendar una cita o visita. Luis debe contactar para confirmar dia y hora.",
+    subject: `Cliente pide cita - ${conv.customer_name || conv.customer_phone || "lead Renoveplac"}`,
+    reply: buildAppointmentSchedulingReply(conv, { notified: true }),
+  });
 }
 
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
@@ -2394,6 +2479,47 @@ app.post("/api/chat", async (req, res) => {
 
     await updateLeadData(conv, leadPatch);
 
+    if (conv.bot_enabled !== false && isAppointmentSchedulingRequest(userMessage, previousMessages)) {
+      try {
+        const result = await requestAppointmentSchedulingHandoff({ ...conv, messages: conv.messages || [] });
+        return res.json({
+          reply: result.reply,
+          conversationId: conv.id,
+          accessToken: conv.access_token,
+          botEnabled: false,
+          budget: null,
+          appointmentSchedulingRequested: true,
+          userMessage: userMsgRow,
+          assistantMessage: result.assistantMsgRow,
+        });
+      } catch (err) {
+        console.error("[appointment-handoff]", err);
+        botReply = buildAppointmentSchedulingReply(conv);
+        const { data } = await supabase
+          .from("bot_messages")
+          .insert({
+            conversation_id: conv.id,
+            role: "assistant",
+            content: botReply,
+          })
+          .select()
+          .single();
+        assistantMsgRow = data;
+
+        return res.json({
+          reply: botReply,
+          conversationId: conv.id,
+          accessToken: conv.access_token,
+          botEnabled: true,
+          budget: null,
+          appointmentSchedulingRequested: true,
+          appointmentSchedulingNoticeFailed: true,
+          userMessage: userMsgRow,
+          assistantMessage: assistantMsgRow,
+        });
+      }
+    }
+
     if (conv.bot_enabled !== false && isHumanHandoffRequest(userMessage)) {
       botReply = buildHumanHandoffOfferMessage(conv);
       const { data } = await supabase
@@ -2511,6 +2637,9 @@ app.post("/api/chat", async (req, res) => {
       }
       if (!createdBudget && looksLikeNoPhotoPermissionConfusion(botReply, userMessage)) {
         botReply = buildNoPhotoContinueReply(conv);
+      }
+      if (looksLikeAppointmentSchedulingReply(botReply)) {
+        botReply = buildAppointmentSchedulingReply(conv);
       }
 
       if (botReply) {
@@ -3190,6 +3319,33 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
 
     if (conv.bot_enabled === false) return;
 
+    if (isAppointmentSchedulingRequest(userMessage, previousMessages)) {
+      try {
+        const result = await requestAppointmentSchedulingHandoff({ ...conv, messages: messagesWithCurrent });
+        const sendStartedAt = Date.now();
+        const sendResult = await wa.sendText(from, result.reply);
+        console.log(
+          `[whatsapp] ${waMessageId}: cita derivada a Luis en ${Date.now() - sendStartedAt}ms ` +
+            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+        );
+      } catch (err) {
+        console.error("[whatsapp/appointment-handoff]", err);
+        const fallback = buildAppointmentSchedulingReply(conv);
+        await supabase.from("bot_messages").insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: fallback,
+        });
+        const sendStartedAt = Date.now();
+        const sendResult = await wa.sendText(from, fallback);
+        console.log(
+          `[whatsapp] ${waMessageId}: cita respondida sin aviso en ${Date.now() - sendStartedAt}ms ` +
+            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+        );
+      }
+      return;
+    }
+
     if (isBudgetViewRequest(userMessage)) {
       const pendingBudget = await fetchLatestPendingBudget(conv.id);
       if (pendingBudget) {
@@ -3380,6 +3536,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     }
     if (!result.budget && looksLikeNoPhotoPermissionConfusion(botReply, userMessage)) {
       botReply = buildNoPhotoContinueReply(fullConv);
+    }
+    if (looksLikeAppointmentSchedulingReply(botReply)) {
+      botReply = buildAppointmentSchedulingReply(fullConv);
     }
 
     if (botReply) {
