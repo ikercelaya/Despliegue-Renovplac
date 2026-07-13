@@ -537,34 +537,6 @@
       }
       .bubble.admin .meta strong { color: #143c32; font-weight: 800; }
 
-      .budget-overview {
-        background: #fff7ef;
-        border-top: 1px solid #ffe1c5;
-        border-bottom: 1px solid #ffe1c5;
-        padding: 14px 18px;
-      }
-      .budget-overview-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 10px;
-        color: var(--brand-orange-hover);
-        font-size: 13px;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-      }
-      .budget-overview-list {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-        gap: 10px;
-      }
-      .budget-overview .budget-card {
-        max-width: none;
-        margin-left: 0;
-        box-shadow: 0 3px 12px rgba(255, 120, 33, 0.1);
-      }
       .budget-note {
         display: block;
         margin-top: 8px;
@@ -1312,7 +1284,6 @@
             '</div>' +
           '</details>';
 
-        const budgetOverviewHtml = renderBudgetOverview(conv.budgets || []);
         const items = [];
         (conv.messages || []).forEach((m) => items.push({ kind: "msg", at: m.created_at, data: m }));
         (conv.budgets || []).forEach((b) => items.push({ kind: "budget", at: b.created_at, data: b }));
@@ -1340,7 +1311,6 @@
 
         renderedConversationId = conv.id;
         mainPane.innerHTML = headerHtml + leadHtml +
-          budgetOverviewHtml +
           '<div class="messages-pane" id="messagesPane">' + messagesHtml + '</div>' +
           replyHtml;
         appScreen.classList.add("conversation-open");
@@ -1409,26 +1379,6 @@
               '<span class="meta"><strong>' + escapeHtml(who) + '</strong> · ' + escapeHtml(fmtDateTime(m.created_at)) + '</span>' +
             '</div>' +
           '</div>'
-        );
-      }
-
-      function renderBudgetOverview(budgets) {
-        const list = (budgets || []).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        if (!list.length) return "";
-        const unconfirmed = list.filter((b) => b.email_confirmation_required && !b.email_confirmed_at).length;
-        const meta = unconfirmed
-          ? unconfirmed + " pendiente" + (unconfirmed === 1 ? "" : "s") + " de email"
-          : list.length + " presupuesto" + (list.length === 1 ? "" : "s");
-        return (
-          '<section class="budget-overview" aria-label="Presupuestos generados">' +
-            '<div class="budget-overview-head">' +
-              '<span>Presupuestos generados por el bot</span>' +
-              '<span>' + escapeHtml(meta) + '</span>' +
-            '</div>' +
-            '<div class="budget-overview-list">' +
-              list.map(renderBudgetItem).join("") +
-            '</div>' +
-          '</section>'
         );
       }
 
