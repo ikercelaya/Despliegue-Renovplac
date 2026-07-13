@@ -928,6 +928,45 @@ async function fetchAwaitingHumanMap(conversationIds) {
   return map;
 }
 
+async function fetchBudgetSummaryMap(conversationIds) {
+  const ids = [...new Set((conversationIds || []).filter(Boolean))];
+  const map = new Map();
+  if (!ids.length) return map;
+
+  const { data, error } = await supabase
+    .from("bot_budgets")
+    .select("id, conversation_id, amount_eur, status, created_at")
+    .in("conversation_id", ids)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.warn("[admin/conversations] No se pudo calcular resumen de presupuestos:", error.message);
+    return map;
+  }
+
+  const budgets = data || [];
+  const confirmations = await fetchBudgetConfirmations(budgets.map((budget) => budget.id));
+  budgets.forEach((budget) => {
+    const confirmation = confirmations.get(budget.id);
+    const current = map.get(budget.conversation_id) || {
+      budget_count: 0,
+      pending_budget_count: 0,
+      unconfirmed_budget_count: 0,
+      latest_budget_amount_eur: null,
+      latest_budget_created_at: null,
+    };
+
+    current.budget_count += 1;
+    if (budget.status === "pending") current.pending_budget_count += 1;
+    if (confirmation && !confirmation.confirmed_at) current.unconfirmed_budget_count += 1;
+    current.latest_budget_amount_eur = budget.amount_eur;
+    current.latest_budget_created_at = budget.created_at;
+    map.set(budget.conversation_id, current);
+  });
+
+  return map;
+}
+
 function formatAdminWhatsappMessage(content) {
   const text = String(content || "").trim();
   return [
@@ -1228,8 +1267,10 @@ function looksLikeBudgetPreparationPromise(text) {
   const mentionsBudget = /\b(presupuesto|estimacion|importe|precio|coste)\b/.test(normalized);
   if (!mentionsBudget) return false;
   return (
+    /\b(he|hemos|ya)\b.{0,35}\b(preparad\w*|generad\w*|calculad\w*|dejad\w*)\b/.test(normalized) ||
+    /\b(recibiras|te llegara|te he enviado|te hemos enviado|he enviado|hemos enviado)\b.{0,90}\b(email|correo|enlace|confirmacion)\b/.test(normalized) ||
     /\b(voy|vamos|puedo|paso|dejo|preparo|calculo|genero|hago)\b.{0,90}\b(preparar\w*|calcular\w*|generar\w*|hacer\w*|dejar\w*|pasar\w*|enviar\w*|mandar\w*)\b/.test(normalized) ||
-    /\b(te lo dejo|te lo preparo|lo preparo|lo calculo|dame un momento|un momento|en un momento|ahora te lo)\b/.test(normalized)
+    /\b(te lo dejo|te lo he dejado|te lo preparo|te lo he preparado|lo preparo|lo he preparado|lo calculo|lo he calculado|dame un momento|un momento|en un momento|ahora te lo)\b/.test(normalized)
   );
 }
 
@@ -1868,6 +1909,42 @@ async function createConversationBudget(input, conv, fullConv) {
     await rollbackBudgetCreation(budget, conv);
     throw err;
   }
+}
+
+async function notifyHumanFromWeb(input, conv) {
+  const reasonLabel = ({
+    queja: "Queja / reclamacion",
+    solicita_humano: "El cliente pide hablar con persona",
+    lead_premium: "Lead premium (administrador, presidente, arquitecto, aparejador)",
+    alto_ticket: "Alto ticket (>15.000 EUR)",
+    fuera_de_zona_obra_grande: "Fuera de zona pero obra grande (valorar)",
+  })[input.reason] || input.reason;
+
+  const lines = [
+    "Aviso del bot: se requiere intervencion humana.",
+    "",
+    `Motivo: ${reasonLabel}`,
+    "",
+    "Resumen del bot:",
+    input.summary || "(sin resumen)",
+    "",
+    "Datos del lead:",
+    `- Nombre: ${conv.customer_name || "(sin nombre)"}`,
+    `- Email: ${conv.customer_email || "(sin email)"}`,
+    `- Telefono: ${conv.customer_phone || "(sin telefono)"}`,
+    `- Codigo postal: ${conv.customer_postal_code || "(sin CP)"}`,
+    `- Tipo de obra: ${conv.work_type || "(no especificado)"}`,
+    "",
+    `Conversacion completa: ${PUBLIC_URL}/admin#${conv.id}`,
+  ].join("\n");
+
+  await safeSendEmail({
+    to: COMPANY_EMAIL,
+    replyTo: conv.customer_email || undefined,
+    subject: `Aviso bot - ${reasonLabel} - ${conv.customer_name || "lead"}`,
+    text: lines,
+  }, "notify_human");
+  return { ok: true };
 }
 
 async function notifyHumanFromWhatsapp(input, conv, from) {
@@ -2549,75 +2626,33 @@ app.post("/api/chat", async (req, res) => {
       const systemPrompt = buildSystemPrompt(buildContext(conv));
       const history = toAnthropicMessages(conv.messages || []);
 
-      const result = await runConversation({
+      let result = await runConversation({
         systemPrompt,
         messages: history,
-        onBudget: async (input) => {
-          assertBudgetCanBeCreatedStrict(input, conv);
-          if (!normalizeEmail(conv.customer_email)) {
-            throw new Error("Falta email del cliente. Pide un email válido antes de generar el presupuesto.");
-          }
-          const { data: budget, error } = await supabase
-            .from("bot_budgets")
-            .insert({
-              conversation_id: conv.id,
-              title: input.title,
-              description: input.description,
-              amount_eur: Number(input.amount_eur) || 0,
-              iva_included: !!input.iva_included,
-            })
-            .select()
-            .single();
-          if (error) throw error;
-          await supabase
-            .from("bot_conversations")
-            .update({ status: "budget_sent" })
-            .eq("id", conv.id);
-          try {
-            const confirmation = await registerBudgetEmailConfirmation(budget, conv);
-            budget.email_confirmation = confirmation;
-            return budget;
-          } catch (err) {
-            await rollbackBudgetCreation(budget, conv);
-            throw err;
-          }
-        },
-        onNotifyHuman: async (input) => {
-          const reasonLabel = ({
-            queja: "Queja / reclamación",
-            solicita_humano: "El cliente pide hablar con persona",
-            lead_premium: "Lead premium (administrador, presidente, arquitecto, aparejador)",
-            alto_ticket: "Alto ticket (>15.000 €)",
-            fuera_de_zona_obra_grande: "Fuera de zona pero obra grande (valorar)",
-          })[input.reason] || input.reason;
-
-          const lines = [
-            `Aviso del bot: se requiere intervención humana.`,
-            "",
-            `Motivo: ${reasonLabel}`,
-            "",
-            `Resumen del bot:`,
-            input.summary || "(sin resumen)",
-            "",
-            "Datos del lead:",
-            `- Nombre: ${conv.customer_name || "(sin nombre)"}`,
-            `- Email: ${conv.customer_email || "(sin email)"}`,
-            `- Teléfono: ${conv.customer_phone || "(sin teléfono)"}`,
-            `- Código postal: ${conv.customer_postal_code || "(sin CP)"}`,
-            `- Tipo de obra: ${conv.work_type || "(no especificado)"}`,
-            "",
-            `Conversación completa: ${PUBLIC_URL}/admin#${conv.id}`,
-          ].join("\n");
-
-          await safeSendEmail({
-            to: COMPANY_EMAIL,
-            replyTo: conv.customer_email || undefined,
-            subject: `Aviso bot — ${reasonLabel} — ${conv.customer_name || "lead"}`,
-            text: lines,
-          }, "notify_human");
-          return { ok: true };
-        },
+        onBudget: (input) => createConversationBudget(input, conv, { ...conv, messages: conv.messages || [] }),
+        onNotifyHuman: (input) => notifyHumanFromWeb(input, conv),
       });
+
+      if (!result.budget && looksLikeBudgetPreparationPromise(result.text)) {
+        console.warn(`[chat] ${conv.id}: el modelo prometio presupuesto sin herramienta; forzando create_budget`);
+        result = await runConversation({
+          systemPrompt:
+            systemPrompt +
+            "\n\nINSTRUCCION CRITICA DEL SERVIDOR: no digas que has preparado, dejado o enviado un presupuesto si no llamas a create_budget. Si estan los datos obligatorios, llama ahora a create_budget. Si falta un dato, pide solo ese dato concreto.",
+          messages: [
+            ...history,
+            { role: "assistant", content: String(result.text || "").slice(0, 1200) },
+            {
+              role: "user",
+              content:
+                "No prometas ni confirmes un presupuesto en texto libre. Genera ahora el presupuesto con create_budget si tienes los datos obligatorios; si falta algo, dime exactamente que falta.",
+            },
+          ],
+          onBudget: (input) => createConversationBudget(input, conv, { ...conv, messages: conv.messages || [] }),
+          onNotifyHuman: (input) => notifyHumanFromWeb(input, conv),
+          maxTokens: Math.max(650, Number(process.env.ANTHROPIC_MAX_TOKENS) || 650),
+        });
+      }
 
       botReply = result.text || "";
       createdBudget = result.budget;
@@ -2960,11 +2995,13 @@ app.get("/api/admin/conversations", requireAdmin, async (_req, res) => {
       .filter((conv) => conv.bot_enabled === false)
       .map((conv) => conv.id);
     const awaitingMap = await fetchAwaitingHumanMap(pausedIds);
+    const budgetSummaryMap = await fetchBudgetSummaryMap(conversations.map((conv) => conv.id));
     return res.json({
       conversations: conversations.map((conv) =>
         cleanConversationForDisplay({
           ...conv,
           awaiting_human: awaitingMap.get(conv.id) || false,
+          ...(budgetSummaryMap.get(conv.id) || {}),
         })
       ),
     });
@@ -2982,7 +3019,14 @@ app.get("/api/admin/conversations/:id", requireAdmin, async (req, res) => {
   if (!conv) return res.status(404).json({ error: "Conversación no encontrada." });
   const budgets = await fetchBudgets(conv.id, { includeUnconfirmed: true });
   const leadStats = await fetchLeadStatsByEmail(conv.customer_email);
-  return res.json({ ...cleanConversationForDisplay(conv), budgets, lead_stats: leadStats });
+  const budgetSummary = {
+    budget_count: budgets.length,
+    pending_budget_count: budgets.filter((budget) => budget.status === "pending").length,
+    unconfirmed_budget_count: budgets.filter((budget) => budget.email_confirmation_required && !budget.email_confirmed_at).length,
+    latest_budget_amount_eur: budgets.length ? budgets[budgets.length - 1].amount_eur : null,
+    latest_budget_created_at: budgets.length ? budgets[budgets.length - 1].created_at : null,
+  };
+  return res.json({ ...cleanConversationForDisplay(conv), ...budgetSummary, budgets, lead_stats: leadStats });
 });
 
 app.post("/api/admin/conversations/:id/reply", requireAdmin, async (req, res) => {

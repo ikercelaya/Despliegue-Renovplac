@@ -336,6 +336,7 @@
       .badge-budget_accepted { background: #cce4ff; color: #0a3d6c; }
       .badge-closed { background: #99a2b5; color: #fff; }
       .badge-bot-paused { background: #ff9b9b; color: #5a0e0e; }
+      .badge-unconfirmed-budget { background: #fff0e2; color: #b84b00; border: 1px solid #ffbd82; }
       .badge-awaiting-human {
         background: #fff3bf;
         color: #795000;
@@ -535,6 +536,42 @@
         color: #4d7668;
       }
       .bubble.admin .meta strong { color: #143c32; font-weight: 800; }
+
+      .budget-overview {
+        background: #fff7ef;
+        border-top: 1px solid #ffe1c5;
+        border-bottom: 1px solid #ffe1c5;
+        padding: 14px 18px;
+      }
+      .budget-overview-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 10px;
+        color: var(--brand-orange-hover);
+        font-size: 13px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+      .budget-overview-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 10px;
+      }
+      .budget-overview .budget-card {
+        max-width: none;
+        margin-left: 0;
+        box-shadow: 0 3px 12px rgba(255, 120, 33, 0.1);
+      }
+      .budget-note {
+        display: block;
+        margin-top: 8px;
+        color: #8a4d1b;
+        font-size: 12px;
+        line-height: 1.4;
+      }
 
       .budget-card {
         max-width: 75%;
@@ -1127,6 +1164,7 @@
           const subline = c.work_type || c.customer_postal_code || c.customer_phone || c.customer_email || sourceLabel(c);
           const botPaused = c.bot_enabled === false;
           const awaitingHuman = c.awaiting_human === true;
+          const hasUnconfirmedBudget = Number(c.unconfirmed_budget_count || 0) > 0;
           li.innerHTML =
             '<div class="conv-avatar">' + escapeHtml(initials(label)) + '</div>' +
             '<div class="conv-body">' +
@@ -1138,6 +1176,7 @@
               '<div class="badges">' +
                 '<span class="badge badge-' + status + '">' + escapeHtml(statusLabel(status)) + '</span>' +
                 (awaitingHuman ? '<span class="badge badge-awaiting-human">Esperando ayuda</span>' : "") +
+                (hasUnconfirmedBudget ? '<span class="badge badge-unconfirmed-budget">Presupuesto pendiente email</span>' : "") +
                 (botPaused ? '<span class="badge badge-bot-paused">Bot pausado</span>' : "") +
               '</div>' +
             '</div>';
@@ -1191,6 +1230,8 @@
         const status = conv.status || "active";
         const botEnabled = conv.bot_enabled !== false;
         const awaitingHuman = conv.awaiting_human === true;
+        const unconfirmedBudgetCount = Number(conv.unconfirmed_budget_count || 0);
+        const hasUnconfirmedBudget = unconfirmedBudgetCount > 0;
         const isClosed = status === "closed";
         const previousPane = document.getElementById("messagesPane");
         const preserveScroll = options.preserveScroll && previousPane;
@@ -1214,6 +1255,7 @@
                 '<span class="badge badge-' + status + '">' + escapeHtml(statusLabel(status)) + '</span>' +
                 (awaitingHuman ? '<span class="badge badge-awaiting-human">Esperando ayuda</span>' : "") +
                 (botEnabled ? "" : '<span class="badge badge-bot-paused">Bot pausado</span>') +
+                (hasUnconfirmedBudget ? '<span class="chip">Presupuesto pendiente email</span>' : "") +
                 (conv.work_type ? '<span class="chip">' + escapeHtml(conv.work_type) + '</span>' : "") +
                 (conv.customer_postal_code ? '<span class="chip">CP ' + escapeHtml(conv.customer_postal_code) + '</span>' : "") +
               '</div>' +
@@ -1270,6 +1312,7 @@
             '</div>' +
           '</details>';
 
+        const budgetOverviewHtml = renderBudgetOverview(conv.budgets || []);
         const items = [];
         (conv.messages || []).forEach((m) => items.push({ kind: "msg", at: m.created_at, data: m }));
         (conv.budgets || []).forEach((b) => items.push({ kind: "budget", at: b.created_at, data: b }));
@@ -1297,6 +1340,7 @@
 
         renderedConversationId = conv.id;
         mainPane.innerHTML = headerHtml + leadHtml +
+          budgetOverviewHtml +
           '<div class="messages-pane" id="messagesPane">' + messagesHtml + '</div>' +
           replyHtml;
         appScreen.classList.add("conversation-open");
@@ -1368,6 +1412,26 @@
         );
       }
 
+      function renderBudgetOverview(budgets) {
+        const list = (budgets || []).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        if (!list.length) return "";
+        const unconfirmed = list.filter((b) => b.email_confirmation_required && !b.email_confirmed_at).length;
+        const meta = unconfirmed
+          ? unconfirmed + " pendiente" + (unconfirmed === 1 ? "" : "s") + " de email"
+          : list.length + " presupuesto" + (list.length === 1 ? "" : "s");
+        return (
+          '<section class="budget-overview" aria-label="Presupuestos generados">' +
+            '<div class="budget-overview-head">' +
+              '<span>Presupuestos generados por el bot</span>' +
+              '<span>' + escapeHtml(meta) + '</span>' +
+            '</div>' +
+            '<div class="budget-overview-list">' +
+              list.map(renderBudgetItem).join("") +
+            '</div>' +
+          '</section>'
+        );
+      }
+
       function renderBudgetItem(b) {
         const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
         const status = b.status || "pending";
@@ -1383,6 +1447,9 @@
           : status === "accepted" && b.accepted_at
           ? '<span class="b-time">Aceptado el ' + escapeHtml(fmtDateTime(b.accepted_at)) + '</span>'
           : '<span class="b-time">Creado el ' + escapeHtml(fmtDateTime(b.created_at)) + '</span>';
+        const visibilityNote = waitingEmail
+          ? '<span class="budget-note">Visible para Renoveplac. El cliente lo vera cuando confirme el enlace enviado por email.</span>'
+          : "";
         return (
           '<div class="budget-card">' +
             '<div class="b-header">' +
@@ -1392,6 +1459,7 @@
             '<div class="amount">' + Number(b.amount_eur).toLocaleString("es-ES") + ' € <span class="iva">' + ivaTxt + '</span></div>' +
             '<div class="desc">' + escapeHtml(b.description) + '</div>' +
             '<div class="b-footer">' + acceptedTime + '</div>' +
+            visibilityNote +
           '</div>'
         );
       }
