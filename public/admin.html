@@ -1248,6 +1248,9 @@
           { label: "Email", value: conv.customer_email, cls: "email" },
           { label: "Teléfono", value: conv.customer_phone, cls: "phone" },
           { label: "Código postal", value: conv.customer_postal_code },
+          { label: "Pueblo", value: conv.customer_town, optional: true },
+          { label: "Dirección obra", value: conv.work_address, optional: true },
+          { label: "Cómo nos conoció", value: conv.lead_source, optional: true },
           { label: "Solicitudes email", value: conv.lead_stats ? String(conv.lead_stats.budget_request_count || 0) : "" },
           { label: "Origen", value: sourceLabel(conv) },
           { label: "Creada", value: fmtDateTime(conv.created_at) },
@@ -1274,7 +1277,7 @@
               '<span class="lead-toggle">Ver datos <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>' +
             '</summary>' +
             '<div class="lead-grid">' +
-              leadFields.map((f) =>
+              leadFields.filter((f) => f.value || !f.optional).map((f) =>
                 '<div class="field ' + escapeHtml(f.cls || "") + '">' +
                   '<span class="field-label">' + escapeHtml(f.label) + '</span>' +
                   '<span class="field-value' + (f.value ? "" : " empty") + '">' + escapeHtml(f.value || "—") + '</span>' +
@@ -1363,18 +1366,27 @@
 
       function renderMessageItem(m) {
         const role = m.role === "user" ? "user" : m.role === "admin" ? "admin" : "bot";
-        const who = role === "user" ? "Cliente" : role === "admin" ? "Luis - Equipo de Renoveplac" : "Renovebot";
-        const initialsAvatar = role === "admin" ? "LU" : "RB";
+        const who = role === "user" ? "Cliente" : role === "admin" ? "Equipo de Renoveplac" : "Renovebot";
+        const initialsAvatar = role === "admin" ? "RP" : "RB";
         const imageHtml = m.image_url
           ? '<a href="' + escapeHtml(m.image_url) + '" target="_blank" rel="noopener"><img src="' + escapeHtml(m.image_url) + '" alt="Imagen adjunta" style="display:block;max-width:280px;max-height:280px;border-radius:8px;margin-bottom:6px;cursor:zoom-in;" /></a>'
           : "";
-        const textVal = String(m.content || "");
+        let textVal = String(m.content || "");
+        // Videos de WhatsApp: el contenido trae una linea "Vídeo: URL".
+        let videoHtml = "";
+        const videoMatch = /\nVídeo: (https?:\/\/\S+)/.exec(textVal);
+        if (videoMatch) {
+          textVal = textVal.replace(videoMatch[0], "");
+          videoHtml = '<video src="' + escapeHtml(videoMatch[1]) + '" controls preload="metadata" style="display:block;max-width:280px;max-height:280px;border-radius:8px;margin-bottom:6px;"></video>' +
+            '<a href="' + escapeHtml(videoMatch[1]) + '" target="_blank" rel="noopener">Abrir vídeo</a><br>';
+        }
         const textHtml = (textVal && textVal !== "(imagen)") ? escapeHtml(textVal) : "";
         return (
           '<div class="msg-group ' + role + '">' +
             (role === "user" ? "" : '<div class="avatar-msg ' + role + '">' + escapeHtml(initialsAvatar) + '</div>') +
             '<div class="bubble ' + role + '">' +
               imageHtml +
+              videoHtml +
               textHtml +
               '<span class="meta"><strong>' + escapeHtml(who) + '</strong> · ' + escapeHtml(fmtDateTime(m.created_at)) + '</span>' +
             '</div>' +

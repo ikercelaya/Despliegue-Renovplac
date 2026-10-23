@@ -627,7 +627,7 @@
         if (msg.role === "admin") {
           const senderEl = document.createElement("div");
           senderEl.className = "admin-sender";
-          senderEl.textContent = "Luis - Equipo de Renoveplac";
+          senderEl.textContent = "Equipo de Renoveplac";
           bubble.appendChild(senderEl);
         }
         if (msg.image_url) {
@@ -715,7 +715,7 @@
         const card = document.createElement("div");
         card.className = "handoff-card";
         card.innerHTML =
-          '<p>Si quieres que Luis revise esta conversacion ahora, pulsa el boton y le avisaremos al equipo.</p>' +
+          '<p>Si quieres que un profesional de nuestro equipo revise esta conversacion ahora, pulsa el boton y le avisaremos.</p>' +
           '<button type="button">Hablar con un humano</button>';
         const btn = card.querySelector("button");
         btn.addEventListener("click", () => requestHumanHandoff(btn, card, reason));
@@ -762,11 +762,33 @@
         setInputState(isLoading);
       }
 
+      // Buenos dias hasta las 14:00, buenas tardes hasta las 20:30, buenas noches despues (hora de España).
+      function spanishGreeting() {
+        let minutes = new Date().getHours() * 60 + new Date().getMinutes();
+        try {
+          const parts = new Intl.DateTimeFormat("es-ES", {
+            timeZone: "Europe/Madrid",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }).formatToParts(new Date());
+          const get = (type) => Number((parts.find((p) => p.type === type) || {}).value || 0);
+          minutes = (get("hour") % 24) * 60 + get("minute");
+        } catch (_err) {}
+        if (minutes >= 6 * 60 && minutes < 14 * 60) return "Buenos días";
+        if (minutes >= 14 * 60 && minutes < 20 * 60 + 30) return "Buenas tardes";
+        return "Buenas noches";
+      }
+
+      function buildWelcomeMessage() {
+        return "¡" + spanishGreeting() + "! Soy Renovebot. Cuéntame qué necesitas (una reforma, una obra o un trabajo de electricidad) y en qué zona sería.";
+      }
+
       async function loadInitial() {
         if (!conversationId && !accessToken) {
           renderMessage({
             role: "assistant",
-            content: "Hola! Soy Renovebot. Cuéntame qué reforma tienes en mente y en qué zona sería.",
+            content: buildWelcomeMessage(),
           });
           return;
         }
@@ -785,7 +807,7 @@
           if (emailConfirmed) {
             renderMessage({
               role: "assistant",
-              content: "Email confirmado. Ya puedes revisar tu presupuesto orientativo en el chat.\n\nSi te encaja, puedes aceptarlo pulsando el botón \"Aceptar presupuesto\" o escribiendo ACEPTO. Después Luis, de Renoveplac, se pondrá en contacto contigo para valorar los detalles y coordinar la visita técnica.",
+              content: "Email confirmado. Ya puedes revisar tu presupuesto orientativo en el chat.\n\nSi te encaja, puedes aceptarlo pulsando el botón \"Aceptar presupuesto\" o escribiendo ACEPTO. Después un profesional de nuestro equipo se pondrá en contacto contigo para valorar los detalles y coordinar la visita técnica.",
             });
             window.history.replaceState({}, document.title, location.pathname + (urlToken ? "?t=" + encodeURIComponent(urlToken) : ""));
           }
@@ -798,7 +820,7 @@
           localStorage.removeItem(STORAGE_KEY);
           renderMessage({
             role: "assistant",
-            content: "Hola! Soy Renovebot. Cuéntame qué reforma tienes en mente y en qué zona sería.",
+            content: buildWelcomeMessage(),
           });
         }
       }

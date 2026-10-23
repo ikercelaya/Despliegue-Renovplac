@@ -6,12 +6,15 @@ const express = require("express");
 
 const { supabase, SUPABASE_URL } = require("./lib/db");
 const { sendEmail } = require("./lib/email");
-const { buildSystemPrompt } = require("./lib/prompt");
+const { buildSystemPrompt, getSpanishGreeting } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
-const { INVALID_PHONE_REPLY, getPhoneSubmissionStatus, normalizeSpanishPhone } = require("./lib/phone");
+const { INVALID_PHONE_REPLY, extractSpanishPhone, getPhoneSubmissionStatus, normalizeSpanishPhone } = require("./lib/phone");
+const { OUT_OF_AREA_REPLY, findExcludedTown } = require("./lib/zones");
 const {
   buildLeadPatch,
   buildLeadPatchFromMessages,
+  inferElectricWorkType,
+  isElectricWorkType,
   isLikelyInvalidCustomerName,
   normalizeWorkType,
 } = require("./lib/lead");
@@ -27,7 +30,7 @@ const COMPANY_EMAIL = process.env.COMPANY_EMAIL || "romeroluis2001@gmail.com";
 const BUDGET_ACCEPTED_EMAIL = process.env.BUDGET_ACCEPTED_EMAIL || "romeroluis2001@gmail.com";
 const ADMIN_RECOVERY_EMAIL = process.env.ADMIN_RECOVERY_EMAIL || COMPANY_EMAIL;
 const HUMAN_HANDOFF_EMAIL = process.env.HUMAN_HANDOFF_EMAIL || COMPANY_EMAIL;
-const COMPANY_NAME = "Luis Eduardo Romero Martinelli";
+const COMPANY_NAME = "Equipo de Renoveplac";
 const WHATSAPP_HISTORY_LIMIT = Number(process.env.WHATSAPP_HISTORY_LIMIT || 6);
 const WHATSAPP_IMAGE_HISTORY_LIMIT = Number(process.env.WHATSAPP_IMAGE_HISTORY_LIMIT || 1);
 const WHATSAPP_MAX_TOKENS = Number(process.env.WHATSAPP_MAX_TOKENS || 420);
@@ -391,6 +394,10 @@ function isPlaceholderFormValue(value) {
 function inferWorkTypeFromText(value) {
   const text = normalizeLooseText(value);
   if (!text || isPlaceholderFormValue(text)) return "";
+  const electricWorkType = inferElectricWorkType(text);
+  if (electricWorkType && !/\b(reforma integral|vivienda completa|casa completa|piso completo|bano|banos|cocina|cocinas|piscina|piscinas)\b/.test(text)) {
+    return electricWorkType;
+  }
   const hasSpecificWorkSignal = /\b(reforma integral|vivienda completa|casa completa|piso completo|bano|banos|ducha|duchas|plato de ducha|sanitario|sanitarios|mampara|aseo|inodoro|lavabo|alicatado|alicatar|azulejo|azulejos|fontaneria|desague|desagues|cocina|cocinas|piscina|piscinas|depuradora|gresite|pladur|falso techo|trasdosado|tabique|fachada|fachadas|monocapa|terraza|patio|exterior|exteriores|suelo|suelos|pavimento|porcelanico|solado|local comercial|local|comunidad|comunidades)\b/.test(text);
   if (/\b(reforma integral|vivienda completa|casa completa|piso completo)\b/.test(text)) return "Reforma integral";
   if (/\b(bano|banos|ducha|duchas|plato de ducha|sanitario|sanitarios|mampara|aseo|inodoro|lavabo|alicatado|alicatar|azulejo|azulejos|fontaneria|desague|desagues)\b/.test(text)) return "Baño completo";
@@ -493,10 +500,13 @@ function buildFormWhatsappGreeting({ name, workType, postalCode, message }) {
   const zoneText = postalCode ? ` Tengo anotado el codigo postal ${postalCode}.` : "";
   const cleanMessage = String(message || "").replace(/\s+/g, " ").trim();
   const messageText = cleanMessage ? ` Tambien tengo anotado: "${cleanMessage.slice(0, 220)}".` : "";
+  const nextStep = isElectricWorkType(workType)
+    ? "Para preparar tu presupuesto, dime el pueblo y la direccion de la obra, que necesitas exactamente (si puedes, con fotos o un video corto del cuadro electrico, el contador o la zona del trabajo) y como nos has conocido."
+    : "Para continuar con tu presupuesto, respondeme por aqui con cualquier detalle que falte: medidas aproximadas, estado actual, fotos o plazo que buscas.";
   return (
-    `Hola${introName}, soy Renovebot, el asistente de Renoveplac. Hemos recibido tu solicitud${workText} desde la web.` +
+    `${getSpanishGreeting()}${introName}, soy Renovebot, el asistente de Renoveplac. Hemos recibido tu solicitud${workText} desde la web.` +
     `${zoneText}${messageText}\n\n` +
-    "Para continuar con tu presupuesto, respondeme por aqui con cualquier detalle que falte: medidas aproximadas, estado actual, fotos o plazo que buscas."
+    nextStep
   );
 }
 
@@ -729,7 +739,161 @@ function buildContext(conv) {
   if (conv.customer_postal_code) parts.push(`Código postal: ${conv.customer_postal_code}`);
   if (conv.work_type) parts.push(`Tipo de obra indicado en formulario: ${conv.work_type}`);
   if (conv.initial_message) parts.push(`Mensaje original del formulario: ${conv.initial_message}`);
+  if (conv.customer_town) parts.push(`Pueblo de la obra: ${conv.customer_town}`);
+  if (conv.work_address) parts.push(`Direccion de la obra: ${conv.work_address}`);
+  if (conv.lead_source) parts.push(`Como nos ha conocido: ${conv.lead_source}`);
+  const excludedTown = findExcludedTown(conv.customer_postal_code) || findExcludedTown(conv.customer_town);
+  if (excludedTown) {
+    parts.push(`AVISO: la zona del cliente corresponde a ${excludedTown}, donde no trabajamos. Responde con amabilidad que por ahora no damos servicio en esa zona.`);
+  }
+  if (isElectricConversation(conv)) {
+    parts.push(
+      `SERVICIO SOLICITADO: electricidad (${normalizeWorkType(conv.work_type)}). Sigue el flujo de electricidad: sin precios ni create_budget; ` +
+        "recoge nombre, telefono, pueblo y direccion de la obra, que necesita y como nos ha conocido, y usa register_electric_request."
+    );
+  }
   return parts.join("\n");
+}
+
+// ---------- Servicios de electricidad ----------
+
+const ELECTRIC_CLOSING_MESSAGE =
+  "Un profesional de nuestro equipo revisa tu caso y te contactamos para preparar el presupuesto, sin compromiso.";
+const ELECTRIC_LEAD_FIELDS = ["customer_town", "work_address", "lead_source"];
+
+function isElectricConversation(conv) {
+  return isElectricWorkType(conv?.work_type);
+}
+
+// En electricidad no se da ningun importe: detecta euros, "desde X" y rangos.
+function looksLikeElectricPriceReply(text) {
+  const raw = String(text || "");
+  return (
+    /\d(?:[\d.\s]*\d)?(?:[,.]\d{1,2})?\s*(?:€|eur\b|euros?\b)/i.test(raw) ||
+    /€\s*\d/.test(raw) ||
+    /\bdesde\s+\d/i.test(raw) ||
+    /\bentre\s+\d[\d.]*\s+(?:y|a)\s+\d/i.test(raw)
+  );
+}
+
+function buildElectricNoPriceReply(conv) {
+  const missing = [];
+  if (!conv?.customer_name || isLikelyInvalidCustomerName(conv.customer_name)) missing.push("tu nombre");
+  if (!extractSpanishPhone(conv?.customer_phone) && !/^34[6-9]\d{8}$/.test(String(conv?.customer_phone || ""))) {
+    missing.push("tu telefono");
+  }
+  missing.push("el pueblo y la direccion de la obra", "que necesitas exactamente", "como nos has conocido");
+  const last = missing.pop();
+  return (
+    "Te preparamos un presupuesto detallado por partidas, sin compromiso. " +
+    `Para ello necesito que me indiques ${missing.join(", ")} y ${last}.`
+  );
+}
+
+function phoneDigits9(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length >= 9 ? digits.slice(-9) : "";
+}
+
+function conversationMentionsPhone(conv, phone) {
+  const target = phoneDigits9(phone);
+  if (!target) return false;
+  if (phoneDigits9(conv?.customer_phone) === target) return true;
+  return (conv?.messages || []).some(
+    (msg) => msg.role === "user" && String(msg.content || "").replace(/\D/g, "").includes(target)
+  );
+}
+
+async function updateConversationWithOptionalFields(conv, patch) {
+  const { error } = await supabase.from("bot_conversations").update(patch).eq("id", conv.id);
+  if (!error) {
+    Object.assign(conv, patch);
+    return { savedOptionalFields: true };
+  }
+  // Si aun no se ha ejecutado sql/electricidad.sql, guarda al menos los campos base.
+  const basePatch = Object.fromEntries(Object.entries(patch).filter(([key]) => !ELECTRIC_LEAD_FIELDS.includes(key)));
+  console.warn(`[electricidad] No se pudieron guardar pueblo/direccion/origen (${conv.id}): ${error.message}`);
+  if (Object.keys(basePatch).length) {
+    const { error: baseError } = await supabase.from("bot_conversations").update(basePatch).eq("id", conv.id);
+    if (baseError) throw baseError;
+  }
+  Object.assign(conv, patch);
+  return { savedOptionalFields: false };
+}
+
+async function registerElectricRequest(input, conv, fullConv, channel) {
+  const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const service = normalizeWorkType(clean(input?.service));
+  const name = clean(input?.customer_name);
+  const town = clean(input?.town);
+  const address = clean(input?.address);
+  const need = clean(input?.need);
+  const leadSource = clean(input?.lead_source);
+  const phone = extractSpanishPhone(input?.phone);
+
+  if (!isElectricWorkType(service)) {
+    throw new Error("El servicio no es de electricidad. Para reformas y obra sigue el flujo normal con create_budget.");
+  }
+  const currentName = conv.customer_name && !isLikelyInvalidCustomerName(conv.customer_name) ? conv.customer_name : "";
+  if (!currentName && (!name || isLikelyInvalidCustomerName(name))) {
+    throw new Error("Falta el nombre del cliente. Pideselo antes de registrar la solicitud.");
+  }
+  if (!phone || !conversationMentionsPhone(fullConv, phone)) {
+    throw new Error("Falta un telefono valido que el cliente haya dado (9 cifras o +34). Pideselo antes de registrar la solicitud.");
+  }
+  if (town.length < 2) throw new Error("Falta el pueblo de la obra. Pideselo al cliente.");
+  const excludedTown = findExcludedTown(town);
+  if (excludedTown) {
+    throw new Error(`No trabajamos en ${excludedTown}. Responde con amabilidad que por ahora no damos servicio en esa zona, sin dar explicaciones.`);
+  }
+  if (address.length < 3) throw new Error("Falta la direccion de la obra. Pidesela al cliente.");
+  if (need.length < 3) throw new Error("Falta que necesita el cliente. Preguntaselo.");
+  if (leadSource.length < 2) throw new Error("Falta como nos ha conocido. Preguntale: ¿Como nos has conocido?");
+
+  const patch = {
+    work_type: service,
+    customer_town: town,
+    work_address: address,
+    lead_source: leadSource,
+  };
+  if (!currentName) patch.customer_name = name;
+  if (!conv.customer_phone) patch.customer_phone = phone;
+  const saved = await updateConversationWithOptionalFields(conv, patch);
+  if (fullConv && fullConv !== conv) Object.assign(fullConv, patch);
+
+  const channelLabel = channel === "whatsapp" ? "WhatsApp" : conv.source === "form" ? "Formulario web" : "Chat web";
+  const lines = [
+    "Nueva solicitud de ELECTRICIDAD recogida por el bot (sin precio: hay que preparar el presupuesto).",
+    "",
+    `Servicio: ${service}`,
+    `Que necesita: ${need}`,
+    "",
+    "Datos del cliente:",
+    `- Nombre: ${currentName || name}`,
+    `- Telefono: ${phone}`,
+    `- Pueblo: ${town}`,
+    `- Direccion de la obra: ${address}`,
+    `- Como nos ha conocido: ${leadSource}`,
+    `- Email: ${conv.customer_email || "(sin email)"}`,
+    `- Canal: ${channelLabel}`,
+    saved.savedOptionalFields ? "" : "\nAviso: ejecuta sql/electricidad.sql en Supabase para guardar pueblo, direccion y origen en el panel.",
+    "",
+    `Conversacion completa: ${PUBLIC_URL}/admin#${conv.id}`,
+  ].join("\n");
+
+  await safeSendEmail({
+    to: COMPANY_EMAIL,
+    replyTo: conv.customer_email || undefined,
+    subject: `Solicitud electricidad - ${service} - ${currentName || name} (${town})`,
+    text: lines,
+  }, "electricidad");
+
+  return { ok: true, service };
+}
+
+function buildElectricClosingReply(conv) {
+  const firstName = getFirstName(conv);
+  return `Gracias${firstName ? `, ${firstName}` : ""}. ${ELECTRIC_CLOSING_MESSAGE}`;
 }
 
 function toAnthropicMessages(messages) {
@@ -785,7 +949,7 @@ function getFastWhatsappGreetingReply(message, conv) {
   if (!/^(hola|buenas|buenos dias|buenas tardes|buenas noches|hello|hi)(\s+(que tal|como estas))?$/.test(text)) return "";
   const priorUserMessages = (conv?.messages || []).filter((msg) => msg.role === "user").length;
   if (priorUserMessages > 0) return "";
-  return "Hola, soy Renovebot, de Renoveplac. Cuentame que reforma tienes en mente y en que zona seria.";
+  return `${getSpanishGreeting()}, soy Renovebot, de Renoveplac. Cuentame que necesitas (una reforma, una obra o un trabajo de electricidad) y en que zona seria.`;
 }
 
 function getFirstName(conv) {
@@ -805,6 +969,7 @@ function isSimpleWhatsappPing(message) {
 
 function getFastWhatsappPendingReply(message, conv) {
   if (!WHATSAPP_FAST_GREETING_ENABLED || !isSimpleWhatsappPing(message)) return "";
+  if (isElectricConversation(conv)) return "";
 
   const lastAssistant = getLastAssistantText(conv?.messages || []);
   const pending = normalizeLooseText(lastAssistant);
@@ -890,6 +1055,7 @@ function hasAwaitingHumanMarker(conv) {
     const text = normalizeLooseText(message.content || "");
     return (
       text.includes("he avisado a luis") ||
+      text.includes("he avisado a un profesional") ||
       text.includes("bot queda pausado") ||
       text.includes("persona del equipo pueda revisar") ||
       text.includes("hablar con un humano")
@@ -919,6 +1085,7 @@ async function fetchAwaitingHumanMap(conversationIds) {
     const text = normalizeLooseText(message.content || "");
     const isHumanWait =
       text.includes("he avisado a luis") ||
+      text.includes("he avisado a un profesional") ||
       text.includes("bot queda pausado") ||
       text.includes("persona del equipo pueda revisar") ||
       text.includes("hablar con un humano");
@@ -970,7 +1137,7 @@ async function fetchBudgetSummaryMap(conversationIds) {
 function formatAdminWhatsappMessage(content) {
   const text = String(content || "").trim();
   return [
-    "*Luis - Equipo de Renoveplac*",
+    "*Equipo de Renoveplac*",
     "Mensaje del equipo",
     "",
     text,
@@ -980,7 +1147,7 @@ function formatAdminWhatsappMessage(content) {
 function addBudgetAcceptanceHint(text, isWeb) {
   const hint = isWeb
     ? "Puedes aceptarlo con el botón \"Aceptar presupuesto\" o escribiendo ACEPTO en el chat."
-    : "Si te encaja, responde ACEPTO y Luis te llamará para coordinar la visita técnica.";
+    : "Si te encaja, responde ACEPTO y un profesional de nuestro equipo te llamará para coordinar la visita técnica.";
   const current = String(text || "").trim();
   if (/ACEPTO|Aceptar presupuesto/i.test(current)) return current;
   return current ? `${current}\n\n${hint}` : hint;
@@ -1107,12 +1274,12 @@ function looksLikeAppointmentSchedulingReply(reply) {
   const text = normalizeLooseText(reply);
   if (!text) return false;
 
-  const delegatesToLuis =
-    /\bluis\b.{0,120}\b(se pondra en contacto|contactara|te llamara|coordinara|coordinar|agendar)\b/.test(text) ||
-    /\b(se pondra en contacto|contactara|te llamara)\b.{0,120}\bluis\b/.test(text);
+  const delegatesToTeam =
+    /\b(luis|profesional|equipo)\b.{0,120}\b(se pondra en contacto|contactara|te llamara|coordinara|coordinar|agendar)\b/.test(text) ||
+    /\b(se pondra en contacto|contactara|te llamara)\b.{0,120}\b(luis|profesional|equipo)\b/.test(text);
   const refusesScheduling =
     /\b(no puedo|no podemos)\b.{0,90}\b(cerrar|confirmar|agendar|reservar|programar)\b.{0,50}\b(cita|horario|hora|visita)\b/.test(text);
-  if (delegatesToLuis || refusesScheduling) return false;
+  if (delegatesToTeam || refusesScheduling) return false;
 
   const claimsAppointment =
     /\b(nos vemos|quedamos|te veo|os veo|me paso|nos pasamos|pasamos|iremos|puedo ir|podemos ir|te visitamos)\b/.test(text);
@@ -1163,7 +1330,7 @@ function buildHumanHandoffOfferMessage(conv) {
   const prefix = firstName ? `Entendido, ${firstName}. ` : "Entendido. ";
   return (
     prefix +
-    "Si quieres que Luis revise esta conversacion, pulsa el boton \"Hablar con un humano\" y le avisare al equipo para que pueda responderte desde aqui."
+    "Si quieres que un profesional de nuestro equipo revise esta conversacion, pulsa el boton \"Hablar con un humano\" y le avisare al equipo para que pueda responderte desde aqui."
   );
 }
 
@@ -1172,7 +1339,7 @@ function buildHumanHandoffConfirmedMessage(conv) {
   const prefix = firstName ? `Perfecto, ${firstName}. ` : "Perfecto. ";
   return (
     prefix +
-    "He avisado a Luis, de Renoveplac. El bot queda pausado para que una persona del equipo pueda revisar esta conversacion y responderte lo antes posible."
+    "He avisado a un profesional de nuestro equipo. El bot queda pausado para que una persona del equipo pueda revisar esta conversacion y responderte lo antes posible."
   );
 }
 
@@ -1180,11 +1347,11 @@ function buildAppointmentSchedulingReply(conv, options = {}) {
   const firstName = getFirstName(conv);
   const prefix = firstName ? `${firstName}, ` : "";
   const notice = options.notified
-    ? "le he dejado aviso a Luis, de Renoveplac. "
+    ? "le he dejado aviso a nuestro equipo. "
     : "";
   return (
     `${prefix}${notice}yo no puedo cerrar citas ni confirmar horarios desde el chat. ` +
-    "Luis se pondra en contacto contigo para agendar la visita y confirmar dia y hora."
+    "Un profesional de nuestro equipo se pondra en contacto contigo para agendar la visita y confirmar dia y hora."
   );
 }
 
@@ -1813,7 +1980,7 @@ function buildWhatsappBudgetMessage(budget, options = {}) {
     description,
     "━━━━━━━━━━━━━━━━━━",
     "",
-    "Si te encaja, responde *ACEPTO* y Luis, de Renoveplac, coordinará contigo la visita técnica.",
+    "Si te encaja, responde *ACEPTO* y un profesional de nuestro equipo coordinará contigo la visita técnica.",
   ].filter(Boolean).join("\n").slice(0, 4096);
 }
 
@@ -1878,6 +2045,11 @@ async function sendBudgetToWhatsapp(conv, budget, options = {}) {
 }
 
 async function createConversationBudget(input, conv, fullConv) {
+  if (isElectricConversation(fullConv) || isElectricConversation(conv)) {
+    throw new Error(
+      "Este cliente solicita un servicio de electricidad: no se crean presupuestos con importe. Recoge sus datos y usa register_electric_request."
+    );
+  }
   assertBudgetCanBeCreatedStrict(input, fullConv);
   if (!normalizeEmail(conv.customer_email)) {
     throw new Error("Falta email del cliente. Pide un email valido antes de generar el presupuesto.");
@@ -1934,6 +2106,9 @@ async function notifyHumanFromWeb(input, conv) {
     `- Telefono: ${conv.customer_phone || "(sin telefono)"}`,
     `- Codigo postal: ${conv.customer_postal_code || "(sin CP)"}`,
     `- Tipo de obra: ${conv.work_type || "(no especificado)"}`,
+    ...(conv.customer_town ? [`- Pueblo: ${conv.customer_town}`] : []),
+    ...(conv.work_address ? [`- Direccion de la obra: ${conv.work_address}`] : []),
+    ...(conv.lead_source ? [`- Como nos ha conocido: ${conv.lead_source}`] : []),
     "",
     `Conversacion completa: ${PUBLIC_URL}/admin#${conv.id}`,
   ].join("\n");
@@ -2133,7 +2308,7 @@ async function acceptPendingBudgetFromChat(conv) {
   const firstName = String(conv.customer_name || "").trim().split(/\s+/)[0] || "";
   const reply =
     `${firstName ? `Perfecto, ${firstName}. ` : "Perfecto. "}Queda confirmado el presupuesto.\n\n` +
-    "Luis, de Renoveplac, se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
+    "Un profesional de nuestro equipo se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
   const { data: assistantMsgRow } = await supabase
     .from("bot_messages")
     .insert({
@@ -2186,6 +2361,9 @@ function buildHumanHandoffEmail(conv, reason) {
     `- Telefono: ${conv.customer_phone || "(sin telefono)"}`,
     `- Codigo postal: ${conv.customer_postal_code || "(sin CP)"}`,
     `- Tipo de obra: ${conv.work_type || "(no especificado)"}`,
+    ...(conv.customer_town ? [`- Pueblo: ${conv.customer_town}`] : []),
+    ...(conv.work_address ? [`- Direccion de la obra: ${conv.work_address}`] : []),
+    ...(conv.lead_source ? [`- Como nos ha conocido: ${conv.lead_source}`] : []),
     "",
     "Enlace directo al chat:",
     adminUrl,
@@ -2234,7 +2412,7 @@ async function requestHumanHandoff(conv, options = {}) {
 
 async function requestAppointmentSchedulingHandoff(conv) {
   return requestHumanHandoff(conv, {
-    reason: "El cliente pide agendar una cita o visita. Luis debe contactar para confirmar dia y hora.",
+    reason: "El cliente pide agendar una cita o visita. El equipo debe contactar para confirmar dia y hora.",
     subject: `Cliente pide cita - ${conv.customer_name || conv.customer_phone || "lead Renoveplac"}`,
     reply: buildAppointmentSchedulingReply(conv, { notified: true }),
   });
@@ -2500,7 +2678,11 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, previousMessages)) {
+    if (
+      conv.bot_enabled !== false &&
+      !isElectricConversation(conv) &&
+      ownerPermissionDeniedByLatestReply(userMessage, previousMessages)
+    ) {
       botReply = ownerPermissionDeniedMessage();
       const { data } = await supabase
         .from("bot_messages")
@@ -2555,6 +2737,30 @@ app.post("/api/chat", async (req, res) => {
     }
 
     await updateLeadData(conv, leadPatch);
+
+    if (conv.bot_enabled !== false && findExcludedTown(userMessage)) {
+      botReply = OUT_OF_AREA_REPLY;
+      const { data } = await supabase
+        .from("bot_messages")
+        .insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: botReply,
+        })
+        .select()
+        .single();
+      assistantMsgRow = data;
+
+      return res.json({
+        reply: botReply,
+        conversationId: conv.id,
+        accessToken: conv.access_token,
+        botEnabled: true,
+        budget: null,
+        userMessage: userMsgRow,
+        assistantMessage: assistantMsgRow,
+      });
+    }
 
     if (conv.bot_enabled !== false && isAppointmentSchedulingRequest(userMessage, previousMessages)) {
       try {
@@ -2631,9 +2837,10 @@ app.post("/api/chat", async (req, res) => {
         messages: history,
         onBudget: (input) => createConversationBudget(input, conv, { ...conv, messages: conv.messages || [] }),
         onNotifyHuman: (input) => notifyHumanFromWeb(input, conv),
+        onElectricRequest: (input) => registerElectricRequest(input, conv, conv, "web"),
       });
 
-      if (!result.budget && looksLikeBudgetPreparationPromise(result.text)) {
+      if (!result.budget && !isElectricConversation(conv) && looksLikeBudgetPreparationPromise(result.text)) {
         console.warn(`[chat] ${conv.id}: el modelo prometio presupuesto sin herramienta; forzando create_budget`);
         result = await runConversation({
           systemPrompt:
@@ -2650,13 +2857,18 @@ app.post("/api/chat", async (req, res) => {
           ],
           onBudget: (input) => createConversationBudget(input, conv, { ...conv, messages: conv.messages || [] }),
           onNotifyHuman: (input) => notifyHumanFromWeb(input, conv),
+          onElectricRequest: (input) => registerElectricRequest(input, conv, conv, "web"),
           maxTokens: Math.max(650, Number(process.env.ANTHROPIC_MAX_TOKENS) || 650),
         });
       }
 
       botReply = result.text || "";
       createdBudget = result.budget;
-      if (createdBudget) {
+      if (result.electricRequest) {
+        botReply = buildElectricClosingReply(conv);
+      } else if (isElectricConversation(conv) && !createdBudget) {
+        if (looksLikeElectricPriceReply(botReply)) botReply = buildElectricNoPriceReply(conv);
+      } else if (createdBudget) {
         if (createdBudget.email_confirmation) {
           botReply = buildBudgetConfirmationMessage(createdBudget.email_confirmation);
         } else {
@@ -2906,7 +3118,7 @@ app.post("/api/budget/:id/accept", async (req, res) => {
       conversation_id: conv.id,
       role: "assistant",
       content:
-        "He registrado tu aceptación del presupuesto orientativo. Luis se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. Recibirás también un email de confirmación.",
+        "He registrado tu aceptación del presupuesto orientativo. Un profesional de nuestro equipo se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. Recibirás también un email de confirmación.",
     });
 
     return res.json({ ok: true });
@@ -3228,6 +3440,8 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     let userMessage = "";
     let imageBuffer = null;
     let imageMime = null;
+    let videoBuffer = null;
+    let videoMime = null;
 
     if (msgType === "text") {
       userMessage = wamsg.text?.body || "";
@@ -3241,6 +3455,15 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         console.error("[whatsapp] error descargando imagen:", err.message);
         userMessage = wamsg.image?.caption || "(imagen no procesable)";
       }
+    } else if (msgType === "video") {
+      try {
+        const dl = await wa.downloadMedia(wamsg.video.id);
+        videoBuffer = dl.buffer;
+        videoMime = dl.mimeType || "video/mp4";
+      } catch (err) {
+        console.error("[whatsapp] error descargando video:", err.message);
+      }
+      userMessage = `(vídeo)${wamsg.video?.caption ? ` ${wamsg.video.caption}` : ""}`;
     } else {
       userMessage = `(tipo de mensaje no soportado: ${msgType})`;
     }
@@ -3280,6 +3503,21 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
     }
 
+    if (videoBuffer) {
+      const ext = (videoMime.split("/")[1] || "mp4").replace(/[^a-z0-9]/g, "").slice(0, 5) || "mp4";
+      const fileName = `${conv.id}/${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from("chat-images")
+        .upload(fileName, videoBuffer, { contentType: videoMime, upsert: false });
+      if (!upErr) {
+        const { data: pub } = supabase.storage.from("chat-images").getPublicUrl(fileName);
+        userMessage = `${userMessage}\nVídeo: ${pub.publicUrl}`;
+      } else {
+        console.warn("[whatsapp] error subiendo video:", upErr.message);
+        userMessage = `${userMessage}\n(No se pudo guardar el vídeo; ejecuta sql/electricidad.sql para permitir vídeos en Storage.)`;
+      }
+    }
+
     if (ACCEPT_BUDGET_REGEX.test(userMessage)) {
       const pending = await fetchLatestPendingBudget(conv.id);
       if (pending) {
@@ -3307,7 +3545,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         }
         await acceptBudgetInternal(pending.id);
         const confirmText =
-          "He registrado tu aceptación del presupuesto orientativo. Luis, de Renoveplac, se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
+          "He registrado tu aceptación del presupuesto orientativo. Un profesional de nuestro equipo se pondrá en contacto contigo en breve para coordinar la visita técnica y cerrar el presupuesto definitivo. ¡Un saludo!";
         await supabase.from("bot_messages").insert({
           conversation_id: conv.id,
           role: "assistant",
@@ -3342,7 +3580,11 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       },
     ];
 
-    if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, previousMessages)) {
+    if (
+      conv.bot_enabled !== false &&
+      !isElectricConversation(conv) &&
+      ownerPermissionDeniedByLatestReply(userMessage, previousMessages)
+    ) {
       const reply = ownerPermissionDeniedMessage();
       await supabase.from("bot_messages").insert({
         conversation_id: conv.id,
@@ -3358,10 +3600,27 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       return;
     }
 
-    const leadPatch = buildLeadPatch(conv, userMessage, messagesWithCurrent);
+    // El enlace del video no debe confundirse con telefonos o codigos postales.
+    const parseableMessage = userMessage.replace(/\nVídeo: \S+/g, "");
+    const leadPatch = buildLeadPatch(conv, parseableMessage, messagesWithCurrent);
     await updateLeadData(conv, leadPatch);
 
     if (conv.bot_enabled === false) return;
+
+    if (findExcludedTown(parseableMessage)) {
+      await supabase.from("bot_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: OUT_OF_AREA_REPLY,
+      });
+      const sendStartedAt = Date.now();
+      const sendResult = await wa.sendText(from, OUT_OF_AREA_REPLY);
+      console.log(
+        `[whatsapp] ${waMessageId}: zona sin servicio respondida en ${Date.now() - sendStartedAt}ms ` +
+          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
+      );
+      return;
+    }
 
     if (isAppointmentSchedulingRequest(userMessage, previousMessages)) {
       try {
@@ -3369,7 +3628,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         const sendStartedAt = Date.now();
         const sendResult = await wa.sendText(from, result.reply);
         console.log(
-          `[whatsapp] ${waMessageId}: cita derivada a Luis en ${Date.now() - sendStartedAt}ms ` +
+          `[whatsapp] ${waMessageId}: cita derivada al equipo en ${Date.now() - sendStartedAt}ms ` +
             `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
         );
       } catch (err) {
@@ -3484,10 +3743,10 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       return;
     }
 
-    const phoneStatus = getPhoneSubmissionStatus(userMessage);
+    const phoneStatus = getPhoneSubmissionStatus(parseableMessage);
     const phoneAttempted =
       !leadPatch.customer_email &&
-      (phoneStatus.attempted || (botRecentlyAskedForPhone(messagesWithCurrent) && /\d/.test(userMessage)));
+      (phoneStatus.attempted || (botRecentlyAskedForPhone(messagesWithCurrent) && /\d/.test(parseableMessage)));
     if (phoneAttempted && !phoneStatus.valid) {
       await supabase.from("bot_messages").insert({
         conversation_id: conv.id,
@@ -3507,7 +3766,9 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     const systemPrompt = buildSystemPrompt(
       buildContext(fullConv) +
         "\nCANAL: WhatsApp. El cliente NO tiene botones; para aceptar un presupuesto debe responder 'ACEPTO'." +
-        "\nSi ya tienes datos suficientes y el cliente pide presupuesto, usa create_budget en este mismo turno. No respondas que lo prepararas mas tarde."
+        "\nSi ya tienes datos suficientes y el cliente pide presupuesto, usa create_budget en este mismo turno. No respondas que lo prepararas mas tarde." +
+        `\nEl cliente escribe desde el WhatsApp ${from}. En electricidad, pregunta si ese es su telefono de contacto; si lo confirma, usa ese numero.` +
+        "\nSi el cliente envia un video, te llegara como '(vídeo)': no puedes verlo, agradeceselo y di que el equipo lo revisara."
     );
     const modelMessages = prepareWhatsappModelMessages(fullConv?.messages || [], {
       forceLatestUserImage: msgType === "image" && !!imageUrl,
@@ -3525,11 +3786,12 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       messages: history,
       onBudget: (input) => createConversationBudget(input, conv, fullConv),
       onNotifyHuman: (input) => notifyHumanFromWhatsapp(input, conv, from),
+      onElectricRequest: (input) => registerElectricRequest(input, conv, fullConv, "whatsapp"),
       maxTokens: WHATSAPP_MAX_TOKENS,
       stopAfterBudget: true,
     });
 
-    if (!result.budget && looksLikeBudgetPreparationPromise(result.text)) {
+    if (!result.budget && !isElectricConversation(fullConv) && looksLikeBudgetPreparationPromise(result.text)) {
       console.warn(`[whatsapp] ${waMessageId}: el modelo prometio presupuesto sin herramienta; forzando create_budget`);
       const forcedSystemPrompt =
         systemPrompt +
@@ -3547,6 +3809,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         ],
         onBudget: (input) => createConversationBudget(input, conv, fullConv),
         onNotifyHuman: (input) => notifyHumanFromWhatsapp(input, conv, from),
+        onElectricRequest: (input) => registerElectricRequest(input, conv, fullConv, "whatsapp"),
         maxTokens: Math.max(WHATSAPP_MAX_TOKENS, 650),
         stopAfterBudget: true,
       });
@@ -3554,7 +3817,11 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     console.log(`[whatsapp] ${waMessageId}: modelo listo en ${Date.now() - modelStartedAt}ms`);
 
     let botReply = result.text || "";
-    if (result.budget) {
+    if (result.electricRequest) {
+      botReply = buildElectricClosingReply(fullConv);
+    } else if (isElectricConversation(fullConv) && !result.budget) {
+      if (looksLikeElectricPriceReply(botReply)) botReply = buildElectricNoPriceReply(fullConv);
+    } else if (result.budget) {
       if (result.budget.email_confirmation) {
         botReply = buildBudgetConfirmationMessage(result.budget.email_confirmation, "whatsapp");
       } else {
@@ -3567,7 +3834,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           `Importe: *${Number(b.amount_eur).toLocaleString("es-ES")} €* ${ivaTxt}\n\n` +
           `${b.description}\n` +
           "━━━━━━━━━━━━━━━━━━\n\n" +
-          `Si te encaja, responde *ACEPTO* y Luis te llamará para coordinar la visita técnica.`;
+          `Si te encaja, responde *ACEPTO* y un profesional de nuestro equipo te llamará para coordinar la visita técnica.`;
         botReply = (botReply ? botReply + "\n" : "") + card;
       }
     } else if (

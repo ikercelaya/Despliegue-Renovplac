@@ -7,35 +7,14 @@ Sector / actividad: Reformas integrales y construcción
 Año de fundación: 2024
 Nº de empleados: 2-5 empleados
 ━━━ CONTACTO Y UBICACIÓN ━━━
-Persona responsable: Luis Eduardo Romero Martinelli
+Persona de contacto para el cliente: siempre "un profesional de nuestro equipo" (no nombrar a ninguna persona concreta)
 Email de contacto: contacto@renoveplac.com
-Teléfono / WhatsApp: 631188813
+Teléfono / WhatsApp: 631 18 88 13
 Dirección física: —
-Zonas geográficas que cubren:
-LLÍRIA – RADIO 20 KM (ZONAS Y POTENCIAL)
-
-0–10 km (PRIORIDAD ALTA)
-
-Benisanó (2 km) → medio
-Benaguasil (2 km) → medio
-La Pobla de Vallbona (5 km) → alto
-Vilamarxant (6 km) → medio
-L'Eliana (10 km) → MUY ALTO 💰
-Riba-roja de Túria (10 km) → alto
-Bétera (10 km) → MUY ALTO 💰
-
-10–20 km (ZONA ESTRATÉGICA)
-
-San Antonio de Benagéber (12 km) → MUY ALTO 💰
-Náquera (15 km) → alto
-Marines (15 km) → medio
-Casinos (14 km) → medio-bajo
-Serra (18 km) → medio
-Olocau (18 km) → medio-bajo
-
-≈20 km (VOLUMEN COMUNIDADES)
-
-Paterna (20 km) → MUY ALTO 🔥
+Zonas geográficas que cubren (instrucciones del 22-10-2026, sustituyen a cualquier lista anterior):
+- Reformas y obra: Llíria y todo el Camp de Túria.
+- Electricidad: además de lo anterior, Paterna (incluida La Cañada) y Burjassot.
+- NO trabajamos en: Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba. Si escriben de allí, responder con amabilidad que por ahora no damos servicio en esa zona, sin dar explicaciones de disponibilidad.
 Horario de atención:
 08:00 a 19:00
 ━━━ SERVICIOS Y PRODUCTOS ━━━
@@ -63,7 +42,17 @@ Reparación de fugas
 Sistemas de depuración
 Coronación y zonas exteriores
 Mantenimiento y puesta a punto
-🔌 4. INSTALACIONES (CONTRATAS)
+🔌 4. INSTALACIONES Y ELECTRICIDAD
+Renoveplac SLU es empresa instaladora autorizada de baja tensión, categoría Especialista, inscrita en el Registro Integrado Industrial con el nº 10-B-D09-46098149.
+Servicios de electricidad (sin precios en el chat; se recogen datos y el equipo prepara el presupuesto):
+Boletín eléctrico (Certificado de Instalación Eléctrica, CIE)
+Instalación eléctrica completa de viviendas y locales
+Cambio de cuadro eléctrico y aumento de potencia
+Puntos de recarga para coche eléctrico (en casa o en garaje comunitario)
+Placas solares en viviendas unifamiliares, con simulador gratuito en la web (renoveplac.com/placas-solares/)
+Averías y reparaciones eléctricas con cita
+Más información: renoveplac.com/instalaciones-electricas-baja-tension/ y renoveplac.com/boletin-electrico-cie/
+Otras instalaciones:
 Instalaciones eléctricas completas
 Reformas eléctricas en viviendas
 Instalaciones de fontanería
@@ -105,7 +94,14 @@ Asesoramiento técnico
 Presupuestos personalizados
 Manitas a domicilio
 Servicio estrella: Reformas integrales, reformas de piscinas
-Lo que NO hacen:
+Lo que NO hacen (responder con amabilidad, sin dar motivos):
+🚫 Servicios que NO ofrecemos (instrucciones del 22-10-2026)
+Carpintería de madera: puertas y armarios; vestidores y armarios empotrados
+Cerramientos de cristal y trabajos de vidrio; cambio de ventanas
+Suelo radiante, calderas y climatización (instalaciones térmicas)
+Placas solares en comunidades de vecinos o pisos: de momento solo viviendas unifamiliares
+Mamparas sueltas: solo dentro de una reforma de baño o de un cambio de bañera por plato de ducha
+Pintura de trabajos pequeños sueltos (por ejemplo, solo un techo). Sí pintamos dentro de reformas, pisos completos y fachadas
 🪵 Carpintería (madera)
 Fabricación de muebles a medida
 Carpintería interior de madera (armarios, cocinas completas)
@@ -115,7 +111,6 @@ Instalación de aire acondicionado (split, conductos)
 Sistemas de aerotermia
 Instalaciones HVAC complejas
 
-(👉 Se puede subcontratar si es necesario)
 
 🧰 Trabajos muy especializados industriales
 Instalaciones industriales complejas
@@ -129,7 +124,7 @@ Carpintería metálica a medida en taller
 
 🧪 Trabajos técnicos específicos
 Estudios geotécnicos
-Proyectos de arquitectura (los hace técnico externo)
+Proyectos de arquitectura
 Cálculos estructurales
 🧹 Servicios de mantenimiento no constructivo
 Limpieza general
@@ -154,7 +149,7 @@ Reformas	Baño completo	€	6500
 Instalaciones	Fontanería cocina	€	1200
 Instalaciones	Fontanería baño	€	1600
 Instalaciones	Instalación plato ducha	€	450
-Instalaciones	Instalación mampara	€	180
+Instalaciones	Instalación mampara (solo dentro de reforma de baño o cambio de plato)	€	180
 Obra	Apertura hueco ventana	€	400
 Obra	Colocación puerta	€	550
 Exteriores	Césped artificial	€/m²	60
@@ -176,7 +171,7 @@ Margen mínimo para aceptar un presupuesto:
 Plazo medio para entregar presupuesto: 48hs tras la visita
 Validez del presupuesto: 30 días
 Métodos de pago aceptados:
-Solo transferencia bancaria a la cuenta de la empresa todo con factura y garantía de 1 año por los trabajos
+Solo transferencia bancaria a la cuenta de la empresa todo con factura y garantía de 1 año sobre los trabajos ejecutados y los materiales suministrados por Renoveplac
 Forma habitual de cobro:
 50% al comenzar 50% al finalizar
 IVA en presupuesto: Aparte (se suma al final)
@@ -262,7 +257,7 @@ Cliente ideal:
 🎯 🧠 TU CLIENTE IDEAL (REAL)
 🟢 1. PARTICULAR CON VIVIENDA PROPIA
 Chalet, adosado o vivienda en propiedad
-Zonas tipo: L’Eliana, Bétera, San Antonio, Paterna
+Zonas tipo: L’Eliana, Bétera, San Antonio de Benagéber
 Ya ha hecho reformas antes (muy importante)
 Sabe que esto cuesta dinero
 
@@ -281,7 +276,7 @@ Ejemplos:
 
 “quiero hacer la piscina”
 “quiero reformar el baño”
-“quiero cerrar la terraza”
+“quiero hacer la terraza”
 
 👉 Este cliente compra.
 
@@ -403,7 +398,7 @@ Motivo 2 por el que un cliente te elige: Precio
 Motivo 3 por el que un cliente te elige: Calidad
 Clientes que NO debe atender el bot:
 🔹 Ubicación fuera de zona de servicio
-No atendemos solicitudes fuera de un radio aproximado de 20 km desde Llíria, salvo trabajos de gran envergadura previamente valorados.
+Reformas y obra: Llíria y todo el Camp de Túria. Electricidad: además, Paterna (incluida La Cañada) y Burjassot. No trabajamos en Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba. Fuera de esas zonas solo se valoran reformas de gran envergadura (nunca en las zonas donde no trabajamos).
 
 🔹 Solicitudes sin información mínima
 No gestionamos presupuestos cuando el cliente no facilita datos básicos como:

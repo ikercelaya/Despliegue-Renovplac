@@ -19,6 +19,9 @@ Chatbot de Renoveplac (reformas integrales en Lliria, Valencia) con:
 │   ├── claude.js          Llamada a Anthropic + tools create_budget y notify_human
 │   ├── db.js              Cliente Supabase
 │   ├── email.js           Envio por Resend API + respaldo SMTP
+│   ├── lead.js            Extraccion de datos del cliente y tipo de obra/servicio
+│   ├── phone.js           Validacion de telefonos españoles
+│   ├── zones.js           Zonas donde no trabajamos (respuesta fija)
 │   ├── prompt.js          System prompt construido con info/
 │   └── whatsapp.js        Cloud API de Meta (envío, descarga de media, firma de webhooks)
 ├── public/
@@ -45,6 +48,7 @@ Chatbot de Renoveplac (reformas integrales en Lliria, Valencia) con:
 1. Crea proyecto en [supabase.com](https://supabase.com).
 2. Abre el **SQL Editor** y ejecuta el contenido de [`sql/schema.sql`](sql/schema.sql).
 3. Para activar la confirmación de presupuestos por email, ejecuta también [`sql/email-confirmation.sql`](sql/email-confirmation.sql).
+   Para los servicios de electricidad (pueblo, dirección de la obra, cómo nos conoció y vídeos de WhatsApp), ejecuta [`sql/electricidad.sql`](sql/electricidad.sql).
 4. Copia las credenciales:
    - `Project URL` → `SUPABASE_URL`
    - `service_role` key (Settings → API) → `SUPABASE_SERVICE_KEY`. **No** uses la `anon` key, el bot necesita escribir en las tablas.
@@ -222,6 +226,23 @@ Edita estos archivos y redeploya. El bot los carga al arrancar y los inyecta en 
    - Se envía un email a `contacto@renoveplac.com` con todos los datos del cliente y el presupuesto, con `Reply-To` apuntando al cliente.
    - El bot añade un mensaje confirmando.
 
+### Servicios de electricidad (sin precios)
+
+Renoveplac SLU es empresa instaladora autorizada de baja tensión (RII 10-B-D09-46098149). Para boletín eléctrico (CIE), instalación eléctrica completa, cuadro y aumento de potencia, puntos de recarga, placas solares en unifamiliares y averías:
+
+1. El bot nunca da precios, rangos ni "desde X €" ni usa `create_budget` (el servidor lo bloquea y sustituye cualquier importe por "Te preparamos un presupuesto detallado por partidas, sin compromiso").
+2. Recoge nombre, teléfono, pueblo, dirección de la obra, qué necesita (con fotos o un vídeo corto si es posible) y cómo nos ha conocido.
+3. Llama a la tool `register_electric_request`: el servidor valida los datos, los guarda en la conversación y envía un email a la empresa.
+4. Cierra con: "Un profesional de nuestro equipo revisa tu caso y te contactamos para preparar el presupuesto, sin compromiso."
+
+Si el cliente pide una reforma que incluye electricidad (baño, cocina, reforma integral), sigue el flujo de reformas con presupuesto orientativo.
+
+### Zonas
+
+- Reformas y obra: Llíria y todo el Camp de Túria.
+- Electricidad: además, Paterna (incluida La Cañada) y Burjassot.
+- No trabajamos en Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba: el servidor responde con un mensaje fijo y amable (`lib/zones.js`).
+
 ## 9. Panel de admin
 
 `/{PUBLIC_URL}/admin`
@@ -253,7 +274,7 @@ Edita estos archivos y redeploya. El bot los carga al arrancar y los inyecta en 
 | `/api/admin/conversations/:id/close` | POST | Cerrar |
 | `/api/admin/conversations/:id/delete` | POST | Eliminar conversación |
 | `/api/whatsapp/webhook` | GET | Verificación del webhook (handshake con `hub.verify_token`) |
-| `/api/whatsapp/webhook` | POST | Recepción de mensajes entrantes de WhatsApp |
+| `/api/whatsapp/webhook` | POST | Recepción de mensajes entrantes de WhatsApp (texto, fotos y vídeos) |
 
 ## 11. Conectar WhatsApp (Cloud API de Meta)
 
