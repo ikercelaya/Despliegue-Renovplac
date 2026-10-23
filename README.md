@@ -228,12 +228,14 @@ Edita estos archivos y redeploya. El bot los carga al arrancar y los inyecta en 
 
 ### Servicios de electricidad (sin precios)
 
-Renoveplac SLU es empresa instaladora autorizada de baja tensión (RII 10-B-D09-46098149). Para boletín eléctrico (CIE), instalación eléctrica completa, cuadro y aumento de potencia, puntos de recarga, placas solares en unifamiliares y averías:
+Renoveplac SLU es empresa instaladora autorizada de baja tensión (RII 10-B-D09-46098149). Para boletín eléctrico (CIE), instalación eléctrica completa, cuadro y aumento de potencia, puntos de recarga, placas solares en unifamiliares y casetas de campo o de aperos, y averías:
 
 1. El bot nunca da precios, rangos ni "desde X €" ni usa `create_budget` (el servidor lo bloquea y sustituye cualquier importe por "Te preparamos un presupuesto detallado por partidas, sin compromiso").
 2. Recoge nombre, teléfono, pueblo, dirección de la obra, qué necesita (con fotos o un vídeo corto si es posible) y cómo nos ha conocido.
 3. Llama a la tool `register_electric_request`: el servidor valida los datos, los guarda en la conversación y envía un email a la empresa.
 4. Cierra con: "Un profesional de nuestro equipo revisa tu caso y te contactamos para preparar el presupuesto, sin compromiso."
+
+Siempre que el cliente pregunta por el boletín, el servidor añade al final "Puedes encontrar más información en: renoveplac.com/boletin-electrico-cie/". Si pregunta por placas solares, añade el enlace al simulador gratuito (renoveplac.com/placas-solares/), salvo que sea para un piso o una comunidad.
 
 Si el cliente pide una reforma que incluye electricidad (baño, cocina, reforma integral), sigue el flujo de reformas con presupuesto orientativo.
 

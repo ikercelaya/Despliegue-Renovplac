@@ -49,9 +49,13 @@ Boletín eléctrico (Certificado de Instalación Eléctrica, CIE)
 Instalación eléctrica completa de viviendas y locales
 Cambio de cuadro eléctrico y aumento de potencia
 Puntos de recarga para coche eléctrico (en casa o en garaje comunitario)
-Placas solares en viviendas unifamiliares, con simulador gratuito en la web (renoveplac.com/placas-solares/)
+Placas solares en viviendas unifamiliares y en casetas de campo o de aperos (no en pisos ni comunidades de vecinos), con simulador gratuito para un precio orientativo (renoveplac.com/placas-solares/)
 Averías y reparaciones eléctricas con cita
 Más información: renoveplac.com/instalaciones-electricas-baja-tension/ y renoveplac.com/boletin-electrico-cie/
+Novedades del 23 de octubre:
+- Subvenciones: no las tramitamos; entregamos la factura y el certificado de instalación eléctrica (CIE), que son los documentos que suelen pedir para cualquier ayuda o bonificación. No se dan porcentajes ni cuantías de ayudas (cambian según el ayuntamiento y el año): consultar en el ayuntamiento y con el asesor las vigentes.
+- Tasas: todas las tasas las paga el cliente y no van incluidas en el precio (registro del boletín en la Generalitat, modelo 046; licencias y comunicaciones de obra municipales; ocupación de la vía pública; cualquier otra tasa oficial).
+- Equipos (placas, inversores, baterías, cargadores): la marca y el modelo pueden cambiar según la disponibilidad de stock, por otros equivalentes o superiores. No se promete una marca concreta.
 Otras instalaciones:
 Instalaciones eléctricas completas
 Reformas eléctricas en viviendas
@@ -99,7 +103,7 @@ Lo que NO hacen (responder con amabilidad, sin dar motivos):
 Carpintería de madera: puertas y armarios; vestidores y armarios empotrados
 Cerramientos de cristal y trabajos de vidrio; cambio de ventanas
 Suelo radiante, calderas y climatización (instalaciones térmicas)
-Placas solares en comunidades de vecinos o pisos: de momento solo viviendas unifamiliares
+Placas solares en comunidades de vecinos o pisos: solo viviendas unifamiliares y casetas de campo o de aperos
 Mamparas sueltas: solo dentro de una reforma de baño o de un cambio de bañera por plato de ducha
 Pintura de trabajos pequeños sueltos (por ejemplo, solo un techo). Sí pintamos dentro de reformas, pisos completos y fachadas
 🪵 Carpintería (madera)

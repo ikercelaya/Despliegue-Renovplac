@@ -891,6 +891,38 @@ async function registerElectricRequest(input, conv, fullConv, channel) {
   return { ok: true, service };
 }
 
+const BOLETIN_INFO_LINE = "Puedes encontrar más información en: renoveplac.com/boletin-electrico-cie/";
+const SOLAR_SIMULATOR_LINE =
+  "Para un precio orientativo, puedes usar nuestro simulador gratuito: renoveplac.com/placas-solares/";
+
+function asksAboutBoletin(message) {
+  return /\bbolet[ií]n|\bcie\b|certificado (?:de )?instalaci[oó]n el[eé]ctrica/i.test(String(message || ""));
+}
+
+function asksAboutSolarPanels(message, conv) {
+  const text = normalizeLooseText(message);
+  if (!text) return false;
+  if (inferElectricWorkType(message) === "Placas solares") return true;
+  // "¿Cuanto cuestan las placas?" cuando la conversacion ya es de placas solares.
+  return normalizeWorkType(conv?.work_type) === "Placas solares" &&
+    /\bplacas?\b/.test(text) && !/\b(pladur|yeso|escayola)\b/.test(text);
+}
+
+// Boletin: la frase con el enlace siempre al final del mensaje.
+// Placas solares: enlace al simulador, salvo para pisos o comunidades (no se hacen).
+function addElectricInfoLinks(reply, userMessage, conv) {
+  let text = String(reply || "").trim();
+  if (!text) return text;
+  const solarNotOffered = /\b(comunidad|comunidades|vecinos|piso|pisos|edificio|bloque)\b/.test(normalizeLooseText(userMessage));
+  if (asksAboutSolarPanels(userMessage, conv) && !solarNotOffered && !text.includes("renoveplac.com/placas-solares")) {
+    text = `${text}\n\n${SOLAR_SIMULATOR_LINE}`;
+  }
+  if (asksAboutBoletin(userMessage)) {
+    text = `${text.split(BOLETIN_INFO_LINE).join("").trim()}\n\n${BOLETIN_INFO_LINE}`;
+  }
+  return text;
+}
+
 function buildElectricClosingReply(conv) {
   const firstName = getFirstName(conv);
   return `Gracias${firstName ? `, ${firstName}` : ""}. ${ELECTRIC_CLOSING_MESSAGE}`;
@@ -2888,6 +2920,7 @@ app.post("/api/chat", async (req, res) => {
       if (looksLikeAppointmentSchedulingReply(botReply)) {
         botReply = buildAppointmentSchedulingReply(conv);
       }
+      if (!createdBudget) botReply = addElectricInfoLinks(botReply, userMessage, conv);
 
       if (botReply) {
         const { data } = await supabase
@@ -3851,6 +3884,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     if (looksLikeAppointmentSchedulingReply(botReply)) {
       botReply = buildAppointmentSchedulingReply(fullConv);
     }
+    if (!result.budget) botReply = addElectricInfoLinks(botReply, parseableMessage, fullConv);
 
     if (botReply) {
       await supabase.from("bot_messages").insert({
