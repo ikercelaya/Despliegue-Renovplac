@@ -9,7 +9,7 @@ const { sendEmail } = require("./lib/email");
 const { buildSystemPrompt, getSpanishGreeting } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
 const { INVALID_PHONE_REPLY, extractSpanishPhone, getPhoneSubmissionStatus, normalizeSpanishPhone } = require("./lib/phone");
-const { OUT_OF_AREA_REPLY, findExcludedTown } = require("./lib/zones");
+const { OUT_OF_AREA_REPLY, findElectricOnlyTown, findExcludedTown } = require("./lib/zones");
 const {
   buildLeadPatch,
   buildLeadPatchFromMessages,
@@ -43,7 +43,6 @@ const WHATSAPP_FORM_TEMPLATE_PARAMS = String(
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean);
-const MIN_BUDGET_AMOUNT_EUR = 600;
 const ACCEPT_BUDGET_REGEX = /^\s*(acepto|si\s+acepto|s[ií]\s+acepto|quiero\s+aceptar|aceptar)\b/i;
 
 app.use(express.json({
@@ -91,10 +90,6 @@ function getPublicUrl() {
 
 function generateToken() {
   return crypto.randomBytes(24).toString("hex");
-}
-
-function generateConfirmationToken() {
-  return crypto.randomBytes(32).toString("hex");
 }
 
 function hashConfirmationToken(token) {
@@ -500,9 +495,12 @@ function buildFormWhatsappGreeting({ name, workType, postalCode, message }) {
   const zoneText = postalCode ? ` Tengo anotado el codigo postal ${postalCode}.` : "";
   const cleanMessage = String(message || "").replace(/\s+/g, " ").trim();
   const messageText = cleanMessage ? ` Tambien tengo anotado: "${cleanMessage.slice(0, 220)}".` : "";
-  const nextStep = isElectricWorkType(workType)
-    ? "Para preparar tu presupuesto, dime el pueblo y la direccion de la obra, que necesitas exactamente (si puedes, con fotos o un video corto del cuadro electrico, el contador o la zona del trabajo) y como nos has conocido."
-    : "Para continuar con tu presupuesto, respondeme por aqui con cualquier detalle que falte: medidas aproximadas, estado actual, fotos o plazo que buscas.";
+  const media = isElectricWorkType(workType)
+    ? "fotos o un video corto de la zona del trabajo, el cuadro electrico o el contador"
+    : "fotos o un video corto de la zona del trabajo";
+  const nextStep =
+    "Para preparar tu presupuesto, dime el pueblo y la direccion de la obra (si puedes, con la ubicacion de Google Maps o de WhatsApp) " +
+    `y que necesitas exactamente. Si puedes, enviame tambien ${media}.`;
   return (
     `${getSpanishGreeting()}${introName}, soy Renovebot, el asistente de Renoveplac. Hemos recibido tu solicitud${workText} desde la web.` +
     `${zoneText}${messageText}\n\n` +
@@ -746,53 +744,79 @@ function buildContext(conv) {
   if (excludedTown) {
     parts.push(`AVISO: la zona del cliente corresponde a ${excludedTown}, donde no trabajamos. Responde con amabilidad que por ahora no damos servicio en esa zona.`);
   }
-  if (isElectricConversation(conv)) {
+  if (conv.status === "request_received") {
     parts.push(
-      `SERVICIO SOLICITADO: electricidad (${normalizeWorkType(conv.work_type)}). Sigue el flujo de electricidad: sin precios ni create_budget; ` +
-        "recoge nombre, telefono, pueblo y direccion de la obra, que necesita y como nos ha conocido, y usa register_electric_request."
+      "ESTADO: la solicitud de este cliente ya esta registrada y el equipo avisado. No vuelvas a usar register_request salvo que pida otro servicio distinto."
     );
   }
   return parts.join("\n");
 }
 
-// ---------- Servicios de electricidad ----------
+// ---------- Solicitudes (todos los servicios) ----------
+// El bot no da precios ni presupuestos: recoge los datos, comprueba la zona y
+// avisa al equipo, que prepara el presupuesto detallado.
 
-const ELECTRIC_CLOSING_MESSAGE =
-  "Un profesional de nuestro equipo revisa tu caso y te contactamos para preparar el presupuesto, sin compromiso.";
-const ELECTRIC_LEAD_FIELDS = ["customer_town", "work_address", "lead_source"];
+const REQUEST_CLOSING_MESSAGE =
+  "Perfecto, ya tengo todo lo necesario. Un profesional de nuestro equipo revisa tu caso y te contactamos para preparar el presupuesto, sin compromiso.";
+const NO_PRICE_MESSAGE = "Te preparamos un presupuesto detallado por partidas, sin compromiso.";
+const COMPANY_PHONE_TEXT = "631 18 88 13";
+const OPTIONAL_LEAD_FIELDS = ["work_address", "lead_source"];
 
-function isElectricConversation(conv) {
-  return isElectricWorkType(conv?.work_type);
+const PRICE_PATTERNS = [
+  /\d(?:[\d.\s]*\d)?(?:[,.]\d{1,2})?\s*(?:€|eur\b|euros?\b)/i,
+  /€\s*\d/,
+  /\bdesde\s+\d/i,
+  /\bentre\s+\d[\d.]*\s+(?:y|a)\s+\d/i,
+];
+const DEADLINE_PATTERNS = [
+  /\b24\s*(?:h|horas)\b/i,
+  /\bma[nñ]ana mismo\b/i,
+  /\b(?:servicio|atencion|atención) (?:urgente|24)/i,
+  /\b(?:en|unos|unas|de|durante|dura|tarda|tardamos|tardaremos)\s+(?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|ocho|diez|quince)(?:\s*(?:o|a|-)\s*(?:\d+|dos|tres|cuatro|cinco|seis))?\s*(?:h|horas?|d[ií]as?|semanas?|mes(?:es)?)\b/i,
+];
+
+function looksLikePriceText(text) {
+  return PRICE_PATTERNS.some((pattern) => pattern.test(String(text || "")));
 }
 
-// En electricidad no se da ningun importe: detecta euros, "desde X" y rangos.
-function looksLikeElectricPriceReply(text) {
-  const raw = String(text || "");
-  return (
-    /\d(?:[\d.\s]*\d)?(?:[,.]\d{1,2})?\s*(?:€|eur\b|euros?\b)/i.test(raw) ||
-    /€\s*\d/.test(raw) ||
-    /\bdesde\s+\d/i.test(raw) ||
-    /\bentre\s+\d[\d.]*\s+(?:y|a)\s+\d/i.test(raw)
-  );
-}
-
-function buildElectricNoPriceReply(conv) {
-  const missing = [];
-  if (!conv?.customer_name || isLikelyInvalidCustomerName(conv.customer_name)) missing.push("tu nombre");
-  if (!extractSpanishPhone(conv?.customer_phone) && !/^34[6-9]\d{8}$/.test(String(conv?.customer_phone || ""))) {
-    missing.push("tu telefono");
+// Quita del mensaje del modelo las frases con precios o plazos. Si habia precio,
+// lo sustituye por la frase de presupuesto detallado.
+function sanitizeBotReply(reply) {
+  const raw = String(reply || "").trim();
+  if (!raw) return raw;
+  let removedPrice = false;
+  const paragraphs = raw.split("\n").map((paragraph) => {
+    const sentences = paragraph.match(/(?:[^.!?]|[.!?](?!\s|$))+[.!?]*(?:\s+|$)/g) || [paragraph];
+    return sentences
+      .filter((sentence) => {
+        if (looksLikePriceText(sentence)) {
+          removedPrice = true;
+          return false;
+        }
+        return !DEADLINE_PATTERNS.some((pattern) => pattern.test(sentence));
+      })
+      .join("")
+      .trim();
+  });
+  let clean = paragraphs.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (removedPrice && !clean.includes(NO_PRICE_MESSAGE)) {
+    clean = clean ? `${NO_PRICE_MESSAGE}\n\n${clean}` : NO_PRICE_MESSAGE;
   }
-  missing.push("el pueblo y la direccion de la obra", "que necesitas exactamente", "como nos has conocido");
-  const last = missing.pop();
-  return (
-    "Te preparamos un presupuesto detallado por partidas, sin compromiso. " +
-    `Para ello necesito que me indiques ${missing.join(", ")} y ${last}.`
-  );
+  return clean || NO_PRICE_MESSAGE;
 }
 
 function phoneDigits9(value) {
   const digits = String(value || "").replace(/\D/g, "");
   return digits.length >= 9 ? digits.slice(-9) : "";
+}
+
+function hasValidCustomerPhone(conv) {
+  const raw = String(conv?.customer_phone || "").replace(/\s+/g, "");
+  return Boolean(normalizeSpanishPhone(raw) || /^34[6-9]\d{8}$/.test(raw));
+}
+
+function hasValidCustomerName(conv) {
+  return Boolean(conv?.customer_name && !isLikelyInvalidCustomerName(conv.customer_name));
 }
 
 function conversationMentionsPhone(conv, phone) {
@@ -811,8 +835,8 @@ async function updateConversationWithOptionalFields(conv, patch) {
     return { savedOptionalFields: true };
   }
   // Si aun no se ha ejecutado sql/electricidad.sql, guarda al menos los campos base.
-  const basePatch = Object.fromEntries(Object.entries(patch).filter(([key]) => !ELECTRIC_LEAD_FIELDS.includes(key)));
-  console.warn(`[electricidad] No se pudieron guardar pueblo/direccion/origen (${conv.id}): ${error.message}`);
+  const basePatch = Object.fromEntries(Object.entries(patch).filter(([key]) => !OPTIONAL_LEAD_FIELDS.includes(key)));
+  console.warn(`[solicitud] No se pudieron guardar direccion/origen (${conv.id}): ${error.message}`);
   if (Object.keys(basePatch).length) {
     const { error: baseError } = await supabase.from("bot_conversations").update(basePatch).eq("id", conv.id);
     if (baseError) throw baseError;
@@ -821,39 +845,53 @@ async function updateConversationWithOptionalFields(conv, patch) {
   return { savedOptionalFields: false };
 }
 
-async function registerElectricRequest(input, conv, fullConv, channel) {
+async function registerRequest(input, conv, fullConv, channel) {
   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
-  const service = normalizeWorkType(clean(input?.service));
-  const name = clean(input?.customer_name);
+  const category = input?.category === "electricidad" ? "electricidad" : "reformas_obra";
+  const service = clean(input?.service).slice(0, 80);
+  const need = clean(input?.need);
   const town = clean(input?.town);
   const address = clean(input?.address);
-  const need = clean(input?.need);
+  const location = clean(input?.location);
+  const name = clean(input?.customer_name);
   const leadSource = clean(input?.lead_source);
   const phone = extractSpanishPhone(input?.phone);
+  const messages = fullConv?.messages || conv.messages || [];
 
-  if (!isElectricWorkType(service)) {
-    throw new Error("El servicio no es de electricidad. Para reformas y obra sigue el flujo normal con create_budget.");
+  if (service.length < 3 || need.length < 3) throw new Error("Falta que necesita el cliente. Preguntaselo.");
+  if (town.length < 2) throw new Error("Falta el pueblo de la obra. Pideselo y compruebalo con las zonas antes de seguir.");
+  const excludedTown = findExcludedTown(town);
+  if (excludedTown) {
+    throw new Error(`No trabajamos en ${excludedTown}. Responde exactamente: "${OUT_OF_AREA_REPLY}"`);
   }
-  const currentName = conv.customer_name && !isLikelyInvalidCustomerName(conv.customer_name) ? conv.customer_name : "";
+  const electricOnlyTown = findElectricOnlyTown(town);
+  if (electricOnlyTown && category !== "electricidad") {
+    throw new Error(
+      `En ${electricOnlyTown} solo hacemos electricidad, no reformas ni obra. Responde exactamente: "${OUT_OF_AREA_REPLY}"`
+    );
+  }
+  if (address.length < 3) throw new Error("Falta la direccion de la obra. Pidesela al cliente.");
+  const currentName = hasValidCustomerName(conv) ? conv.customer_name : "";
   if (!currentName && (!name || isLikelyInvalidCustomerName(name))) {
     throw new Error("Falta el nombre del cliente. Pideselo antes de registrar la solicitud.");
   }
-  if (!phone || !conversationMentionsPhone(fullConv, phone)) {
+  if (!phone || !conversationMentionsPhone(fullConv || conv, phone)) {
     throw new Error("Falta un telefono valido que el cliente haya dado (9 cifras o +34). Pideselo antes de registrar la solicitud.");
   }
-  if (town.length < 2) throw new Error("Falta el pueblo de la obra. Pideselo al cliente.");
-  const excludedTown = findExcludedTown(town);
-  if (excludedTown) {
-    throw new Error(`No trabajamos en ${excludedTown}. Responde con amabilidad que por ahora no damos servicio en esa zona, sin dar explicaciones.`);
+  const permissionStatus = getOwnerPermissionStatus(messages);
+  if (permissionStatus === "denied") {
+    throw new Error("El cliente no es propietario ni tiene permiso del propietario: no se puede realizar el servicio. Explicaselo con amabilidad.");
   }
-  if (address.length < 3) throw new Error("Falta la direccion de la obra. Pidesela al cliente.");
-  if (need.length < 3) throw new Error("Falta que necesita el cliente. Preguntaselo.");
+  if (input?.owner_confirmed !== true) {
+    throw new Error("Falta confirmar si es el propietario o tiene permiso del propietario. Preguntaselo.");
+  }
   if (leadSource.length < 2) throw new Error("Falta como nos ha conocido. Preguntale: ¿Como nos has conocido?");
 
+  const fullAddress = location ? `${address} · ${location}` : address;
   const patch = {
     work_type: service,
-    customer_town: town,
-    work_address: address,
+    status: "request_received",
+    work_address: fullAddress,
     lead_source: leadSource,
   };
   if (!currentName) patch.customer_name = name;
@@ -863,20 +901,24 @@ async function registerElectricRequest(input, conv, fullConv, channel) {
 
   const channelLabel = channel === "whatsapp" ? "WhatsApp" : conv.source === "form" ? "Formulario web" : "Chat web";
   const lines = [
-    "Nueva solicitud de ELECTRICIDAD recogida por el bot (sin precio: hay que preparar el presupuesto).",
+    "Nueva solicitud de presupuesto recogida por el bot (sin precio: hay que preparar el presupuesto detallado).",
     "",
+    `Tipo: ${category === "electricidad" ? "Electricidad" : "Reformas y obra"}`,
     `Servicio: ${service}`,
     `Que necesita: ${need}`,
     "",
     "Datos del cliente:",
     `- Nombre: ${currentName || name}`,
     `- Telefono: ${phone}`,
-    `- Pueblo: ${town}`,
+    `- Pueblo (comprobado): ${town}`,
     `- Direccion de la obra: ${address}`,
+    `- Ubicacion: ${location || "(no enviada)"}`,
+    `- Fotos o video: ${input?.media_sent ? "si" : "no"}`,
+    "- Propietario o con permiso: si",
     `- Como nos ha conocido: ${leadSource}`,
     `- Email: ${conv.customer_email || "(sin email)"}`,
     `- Canal: ${channelLabel}`,
-    saved.savedOptionalFields ? "" : "\nAviso: ejecuta sql/electricidad.sql en Supabase para guardar pueblo, direccion y origen en el panel.",
+    saved.savedOptionalFields ? "" : "\nAviso: ejecuta sql/electricidad.sql en Supabase para guardar direccion y origen en el panel.",
     "",
     `Conversacion completa: ${PUBLIC_URL}/admin#${conv.id}`,
   ].join("\n");
@@ -884,11 +926,24 @@ async function registerElectricRequest(input, conv, fullConv, channel) {
   await safeSendEmail({
     to: COMPANY_EMAIL,
     replyTo: conv.customer_email || undefined,
-    subject: `Solicitud electricidad - ${service} - ${currentName || name} (${town})`,
+    subject: `Nueva solicitud - ${service} - ${currentName || name} (${town})`,
     text: lines,
-  }, "electricidad");
+  }, "solicitud");
 
-  return { ok: true, service };
+  return { ok: true, service, category };
+}
+
+// Ultimo paso comun (web y WhatsApp) sobre la respuesta del modelo.
+function finalizeBotReply(result, userMessage, conv) {
+  if (result.request) return REQUEST_CLOSING_MESSAGE;
+  let botReply = sanitizeBotReply(result.text || "");
+  if (looksLikeNoPhotoPermissionConfusion(botReply, userMessage)) {
+    botReply = buildNoPhotoContinueReply(conv);
+  }
+  if (looksLikeAppointmentSchedulingReply(botReply)) {
+    botReply = buildAppointmentSchedulingReply(conv);
+  }
+  return addServiceInfoLinks(botReply, userMessage, conv);
 }
 
 const BOLETIN_INFO_LINE = "Puedes encontrar más información en: renoveplac.com/boletin-electrico-cie/";
@@ -910,7 +965,7 @@ function asksAboutSolarPanels(message, conv) {
 
 // Boletin: la frase con el enlace siempre al final del mensaje.
 // Placas solares: enlace al simulador, salvo para pisos o comunidades (no se hacen).
-function addElectricInfoLinks(reply, userMessage, conv) {
+function addServiceInfoLinks(reply, userMessage, conv) {
   let text = String(reply || "").trim();
   if (!text) return text;
   const solarNotOffered = /\b(comunidad|comunidades|vecinos|piso|pisos|edificio|bloque)\b/.test(normalizeLooseText(userMessage));
@@ -921,11 +976,6 @@ function addElectricInfoLinks(reply, userMessage, conv) {
     text = `${text.split(BOLETIN_INFO_LINE).join("").trim()}\n\n${BOLETIN_INFO_LINE}`;
   }
   return text;
-}
-
-function buildElectricClosingReply(conv) {
-  const firstName = getFirstName(conv);
-  return `Gracias${firstName ? `, ${firstName}` : ""}. ${ELECTRIC_CLOSING_MESSAGE}`;
 }
 
 function toAnthropicMessages(messages) {
@@ -1001,38 +1051,28 @@ function isSimpleWhatsappPing(message) {
 
 function getFastWhatsappPendingReply(message, conv) {
   if (!WHATSAPP_FAST_GREETING_ENABLED || !isSimpleWhatsappPing(message)) return "";
-  if (isElectricConversation(conv)) return "";
 
   const lastAssistant = getLastAssistantText(conv?.messages || []);
   const pending = normalizeLooseText(lastAssistant);
   if (!pending) return "";
 
   const firstName = getFirstName(conv);
-  const greeting = firstName ? `Hola ${firstName}.` : "Hola.";
+  const greeting = `${getSpanishGreeting()}${firstName ? `, ${firstName}` : ""}.`;
 
-  if (/\b(email|correo|e-mail|enlace|confirmacion|confirmar)\b/.test(pending)) {
-    return `${greeting}\n\nPara seguir necesito que confirmes el email desde el enlace que te he enviado. En cuanto lo abras, el presupuesto aparecera en el chat.`;
-  }
-  if (/\bfotos?\b|\bimagenes?\b|\badjunt/.test(pending)) {
-    return `${greeting}\n\nCuando puedas, enviame las fotos que te pedia para poder preparar el presupuesto con mas precision.`;
-  }
   if (/\btelefono|movil|whatsapp|numero\b/.test(pending)) {
     return `${greeting}\n\nPara seguir necesito tu telefono con 9 cifras, por ejemplo 612 345 678, o con prefijo +34.`;
   }
-  if (/\bcodigo postal\b|\bcp\b/.test(pending)) {
-    return `${greeting}\n\nPara continuar necesito el codigo postal de la vivienda donde seria la reforma.`;
+  if (/\bnombre\b|\bcomo te llamas\b/.test(pending)) {
+    return `${greeting}\n\nPara seguir necesito tu nombre.`;
   }
-  if (/\bnombre\b|\bcomo te llamas\b|\blocalice\b|\blocalizarte\b/.test(pending)) {
-    return `${greeting}\n\nPara dejar tus datos bien registrados necesito tu nombre completo.`;
+  if (/\bpropietari[oa]\b|\bpermiso\b/.test(pending)) {
+    return `${greeting}\n\nPara seguir necesito saber si eres el propietario o tienes permiso del propietario.`;
   }
-  if (/\bpropietari[oa]\b|\bduen[oa]\b|\bpermiso\b|\bautorizacion\b/.test(pending)) {
-    return `${greeting}\n\nAntes de prepararte presupuesto necesito confirmarte: eres propietario o tienes permiso del dueño para hacer la reforma?`;
+  if (/\bdireccion\b|\bpueblo\b|\bubicacion\b/.test(pending)) {
+    return `${greeting}\n\nPara seguir necesito el pueblo y la direccion de la obra.`;
   }
-  if (/\bmedidas?\b|\bdimensiones?\b|\bmetros?\b|\bm2\b|\btamano\b/.test(pending)) {
-    return `${greeting}\n\nPara poder orientarte bien necesito las medidas aproximadas de la reforma. Si no las tienes exactas, dime una estimacion.`;
-  }
-  if (/\bacabado\b|\bcalidad\b|\bbasico\b|\bmedio\b|\balto\b/.test(pending)) {
-    return `${greeting}\n\nPara calcularlo mejor necesito saber que nivel de acabado buscas: basico, medio o alto.`;
+  if (/\bconocido\b/.test(pending)) {
+    return `${greeting}\n\nPor ultimo, ¿como nos has conocido? (Google, Instagram, recomendacion...)`;
   }
 
   return "";
@@ -1088,6 +1128,7 @@ function hasAwaitingHumanMarker(conv) {
     return (
       text.includes("he avisado a luis") ||
       text.includes("he avisado a un profesional") ||
+      text.includes("te contacta lo antes posible") ||
       text.includes("bot queda pausado") ||
       text.includes("persona del equipo pueda revisar") ||
       text.includes("hablar con un humano")
@@ -1118,6 +1159,7 @@ async function fetchAwaitingHumanMap(conversationIds) {
     const isHumanWait =
       text.includes("he avisado a luis") ||
       text.includes("he avisado a un profesional") ||
+      text.includes("te contacta lo antes posible") ||
       text.includes("bot queda pausado") ||
       text.includes("persona del equipo pueda revisar") ||
       text.includes("hablar con un humano");
@@ -1174,15 +1216,6 @@ function formatAdminWhatsappMessage(content) {
     "",
     text,
   ].join("\n");
-}
-
-function addBudgetAcceptanceHint(text, isWeb) {
-  const hint = isWeb
-    ? "Puedes aceptarlo con el botón \"Aceptar presupuesto\" o escribiendo ACEPTO en el chat."
-    : "Si te encaja, responde ACEPTO y un profesional de nuestro equipo te llamará para coordinar la visita técnica.";
-  const current = String(text || "").trim();
-  if (/ACEPTO|Aceptar presupuesto/i.test(current)) return current;
-  return current ? `${current}\n\n${hint}` : hint;
 }
 
 function normalizeLooseText(value) {
@@ -1246,9 +1279,9 @@ function ownerPermissionDeniedByLatestReply(userMessage, previousMessages) {
 
 function ownerPermissionDeniedMessage() {
   return (
-    "Lo entiendo. En ese caso no puedo prepararte un presupuesto, porque necesitamos que seas propietario " +
-    "o tengas permiso del dueño para valorar la reforma.\n\n" +
-    "Si más adelante tienes esa autorización, estaré encantado de ayudarte con el presupuesto."
+    "Lo entiendo. En ese caso no podemos realizar el servicio, porque necesitamos que seas el propietario " +
+    "o tengas permiso del propietario.\n\n" +
+    "Si más adelante tienes esa autorización, estaremos encantados de ayudarte. ¡Gracias por pensar en nosotros!"
   );
 }
 
@@ -1274,9 +1307,8 @@ function buildNoPhotoContinueReply(conv) {
   const firstName = getFirstName(conv);
   const prefix = firstName ? `${firstName}, ` : "";
   return (
-    `${prefix}no pasa nada si ahora no tienes fotos. Puedo orientarte con los datos que me des, ` +
-    "pero el presupuesto sera menos preciso y el equipo tendra que revisarlo despues con mas detalle.\n\n" +
-    "Dime el plazo aproximado que tienes en mente para empezar la reforma y seguimos."
+    `${prefix}no pasa nada si ahora no puedes enviar fotos. ` +
+    "Un profesional de nuestro equipo lo revisara con los datos que me des. Seguimos con lo que falta."
   );
 }
 
@@ -1357,209 +1389,84 @@ function isAppointmentSchedulingRequest(message, messages = []) {
   return asksAppointment || explicitSchedule || asksSchedulingContact || asksVisitToProperty || asksWhenCanVisit || proposesSlot || confirmsPreviousSlot;
 }
 
-function buildHumanHandoffOfferMessage(conv) {
-  const firstName = getFirstName(conv);
-  const prefix = firstName ? `Entendido, ${firstName}. ` : "Entendido. ";
+const HUMAN_CONTACT_MARKER = "un profesional de nuestro equipo te contacta";
+
+function buildHumanContactRequest(conv) {
+  const needName = !hasValidCustomerName(conv);
+  const needPhone = !hasValidCustomerPhone(conv);
+  const what = needName && needPhone ? "tu nombre y teléfono" : needName ? "tu nombre" : "tu teléfono";
   return (
-    prefix +
-    "Si quieres que un profesional de nuestro equipo revise esta conversacion, pulsa el boton \"Hablar con un humano\" y le avisare al equipo para que pueda responderte desde aqui."
+    `Claro. Déjame ${what} y un profesional de nuestro equipo te contacta. ` +
+    `También puedes llamarnos o escribirnos por WhatsApp al ${COMPANY_PHONE_TEXT}.`
   );
 }
 
 function buildHumanHandoffConfirmedMessage(conv) {
   const firstName = getFirstName(conv);
-  const prefix = firstName ? `Perfecto, ${firstName}. ` : "Perfecto. ";
   return (
-    prefix +
-    "He avisado a un profesional de nuestro equipo. El bot queda pausado para que una persona del equipo pueda revisar esta conversacion y responderte lo antes posible."
+    `Gracias${firstName ? `, ${firstName}` : ""}. Un profesional de nuestro equipo te contacta lo antes posible. ` +
+    `También puedes llamarnos o escribirnos por WhatsApp al ${COMPANY_PHONE_TEXT}.`
   );
 }
 
-function buildAppointmentSchedulingReply(conv, options = {}) {
+function isPendingHumanContact(messages) {
+  const assistants = (messages || []).filter((msg) => msg.role === "assistant").slice(-2);
+  return assistants.some((msg) => {
+    const text = normalizeLooseText(msg.content || "");
+    return text.startsWith("claro. dejame") && text.includes(HUMAN_CONTACT_MARKER);
+  });
+}
+
+// "Quiero hablar con una persona": pide nombre y telefono (solo los que falten) y,
+// cuando estan, avisa al equipo por email y pausa el bot.
+async function handleHumanContactRequest(conv, userMessage, previousMessages, leadPatch) {
+  const asks = isHumanHandoffRequest(userMessage);
+  const pending = !asks && isPendingHumanContact(previousMessages);
+  if (!asks && !pending) return null;
+  const gaveContactData = Boolean(leadPatch?.customer_name || leadPatch?.customer_phone);
+  if (pending && !gaveContactData) return null;
+
+  if (hasValidCustomerName(conv) && hasValidCustomerPhone(conv)) {
+    try {
+      const result = await requestHumanHandoff(conv, {
+        reason: "El cliente pide hablar con una persona",
+        reply: buildHumanHandoffConfirmedMessage(conv),
+      });
+      return { ...result, botEnabled: false };
+    } catch (err) {
+      console.error("[human-contact]", err);
+      return insertAssistantReply(
+        conv,
+        `Ahora mismo no he podido avisar al equipo. Puedes llamarnos o escribirnos por WhatsApp al ${COMPANY_PHONE_TEXT}.`
+      );
+    }
+  }
+  return insertAssistantReply(conv, buildHumanContactRequest(conv));
+}
+
+async function insertAssistantReply(conv, reply) {
+  const { data: assistantMsgRow } = await supabase
+    .from("bot_messages")
+    .insert({
+      conversation_id: conv.id,
+      role: "assistant",
+      content: reply,
+    })
+    .select()
+    .single();
+  return { reply, assistantMsgRow, botEnabled: conv.bot_enabled !== false };
+}
+
+function buildAppointmentSchedulingReply(conv) {
   const firstName = getFirstName(conv);
   const prefix = firstName ? `${firstName}, ` : "";
-  const notice = options.notified
-    ? "le he dejado aviso a nuestro equipo. "
-    : "";
+  const next = conv?.status === "request_received"
+    ? ""
+    : " Mientras, sigamos con los datos que me faltan para preparar tu presupuesto.";
   return (
-    `${prefix}${notice}yo no puedo cerrar citas ni confirmar horarios desde el chat. ` +
-    "Un profesional de nuestro equipo se pondra en contacto contigo para agendar la visita y confirmar dia y hora."
+    `${prefix}no puedo cerrar citas ni dar fechas desde el chat: ` +
+    `un profesional de nuestro equipo te contactará para concretarlo.${next}`
   );
-}
-
-function getMissingBudgetContactFields(conv) {
-  const missing = [];
-  const compactPhone = String(conv?.customer_phone || "").replace(/\s+/g, "");
-  const validPhone = normalizeSpanishPhone(compactPhone) || /^34[6-9]\d{8}$/.test(compactPhone);
-  if (!conv?.customer_name || isLikelyInvalidCustomerName(conv.customer_name)) missing.push("nombre completo");
-  if (!validPhone) missing.push("telefono");
-  if (!normalizeEmail(conv?.customer_email)) missing.push("email");
-  if (!/^\d{5}$/.test(String(conv?.customer_postal_code || "").trim())) missing.push("codigo postal");
-  return missing;
-}
-
-function buildMissingBudgetContactReply(conv) {
-  const missing = getMissingBudgetContactFields(conv);
-  if (!missing.length) return "";
-
-  const firstName = getFirstName(conv);
-  const prefix = firstName ? `${firstName}, ` : "";
-  const nextField = missing[0];
-
-  if (nextField === "nombre completo") {
-    return "Para poder continuar con el presupuesto y dejar tu solicitud bien registrada, dime tu nombre completo.";
-  }
-  if (nextField === "telefono") {
-    return `${prefix}ahora dime tu telefono movil con 9 cifras. Por ejemplo: 612 345 678.`;
-  }
-  if (nextField === "email") {
-    return `${prefix}ahora dime tu email. Te enviare ahi el enlace de confirmacion antes de mostrarte el presupuesto.`;
-  }
-  if (nextField === "codigo postal") {
-    return `${prefix}por ultimo, dime el codigo postal de la vivienda donde seria la reforma.`;
-  }
-
-  return "Necesito completar un dato de contacto para continuar con el presupuesto.";
-}
-
-function looksLikeInlineBudgetReply(text) {
-  const raw = String(text || "");
-  if (!raw.trim()) return false;
-  const normalized = normalizeLooseText(raw);
-  const hasBudgetLanguage = /\b(presupuesto|importe|precio|coste|estaria|seria|saldria|incluye|incluiria)\b/.test(normalized);
-  const hasEuroAmount = /(?:\d{1,3}(?:[.\s]\d{3})+|\d{3,6})(?:[,.]\d{1,2})?\s*(?:€|eur|euros?)\b/i.test(raw);
-  return hasBudgetLanguage && hasEuroAmount;
-}
-
-function looksLikeBlockedBudgetReply(text) {
-  const raw = String(text || "");
-  if (!raw.trim()) return false;
-  const normalized = normalizeLooseText(raw);
-  const hasBudgetLanguage = /\b(presupuesto|orientativo|importe|precio|coste|estaria|seria|saldria|incluye|incluiria|partidas?)\b/.test(normalized);
-  const amountPattern = "(?:\\d{1,3}(?:[.\\s]\\d{3})+|\\d{3,6})(?:[,\\.]\\d{1,2})?";
-  const hasEuroAmount = new RegExp(`${amountPattern}\\s*(?:\\u20ac|eur|euros?)\\b`, "i").test(raw);
-  const hasPriceRange = new RegExp(`\\bentre\\s+${amountPattern}\\s+(?:y|a|-)\\s+${amountPattern}`, "i").test(raw);
-  return looksLikeInlineBudgetReply(raw) || (hasBudgetLanguage && (hasEuroAmount || hasPriceRange));
-}
-
-function looksLikeBatchContactDataRequest(text) {
-  const normalized = normalizeLooseText(text);
-  if (!normalized) return false;
-  const fieldCount = [
-    /\bnombre\b/.test(normalized),
-    /\b(telefono|movil|whatsapp|numero)\b/.test(normalized),
-    /\b(email|correo|e-mail)\b/.test(normalized),
-    /\b(codigo postal|cp)\b/.test(normalized),
-  ].filter(Boolean).length;
-  return fieldCount >= 2 && /\b(dato|contacto|presupuesto|preparar)\b/.test(normalized);
-}
-
-function looksLikeOwnerPermissionQuestion(text) {
-  const normalized = normalizeLooseText(text);
-  if (!normalized) return false;
-  return /\b(propietar|permiso|duen|dueno|titular)\b/.test(normalized);
-}
-
-function looksLikeBudgetPreparationPromise(text) {
-  const normalized = normalizeLooseText(text);
-  if (!normalized) return false;
-  const mentionsBudget = /\b(presupuesto|estimacion|importe|precio|coste)\b/.test(normalized);
-  if (!mentionsBudget) return false;
-  return (
-    /\b(he|hemos|ya)\b.{0,35}\b(preparad\w*|generad\w*|calculad\w*|dejad\w*)\b/.test(normalized) ||
-    /\b(recibiras|te llegara|te he enviado|te hemos enviado|he enviado|hemos enviado)\b.{0,90}\b(email|correo|enlace|confirmacion)\b/.test(normalized) ||
-    /\b(voy|vamos|puedo|paso|dejo|preparo|calculo|genero|hago)\b.{0,90}\b(preparar\w*|calcular\w*|generar\w*|hacer\w*|dejar\w*|pasar\w*|enviar\w*|mandar\w*)\b/.test(normalized) ||
-    /\b(te lo dejo|te lo he dejado|te lo preparo|te lo he preparado|lo preparo|lo he preparado|lo calculo|lo he calculado|dame un momento|un momento|en un momento|ahora te lo)\b/.test(normalized)
-  );
-}
-
-function buildPreBudgetGuardReply(conv) {
-  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
-  if (permissionStatus === "denied") return ownerPermissionDeniedMessage();
-  if (permissionStatus !== "confirmed") {
-    return "Antes de prepararte presupuesto necesito confirmarte: eres propietario o tienes permiso del dueño para hacer la reforma?";
-  }
-
-  const contactReply = buildMissingBudgetContactReply(conv);
-  if (contactReply) return contactReply;
-
-  return (
-    "Ya tengo la informacion principal. Para mostrarte el presupuesto orientativo necesito generarlo correctamente " +
-    "y enviarte primero el enlace de confirmacion al email. Dame un ultimo detalle si falta alguno y lo preparo."
-  );
-}
-
-function assertBudgetCanBeCreated(input, conv) {
-  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
-  if (permissionStatus === "denied") {
-    throw new Error(
-      "El cliente ha indicado que no es propietario ni tiene permiso del dueño. No generes presupuesto; explícalo con educación."
-    );
-  }
-  if (permissionStatus !== "confirmed") {
-    throw new Error(
-      "Antes de crear el presupuesto debes preguntar: ¿Eres propietario o tienes permiso del dueño para hacer la reforma?"
-    );
-  }
-
-  const missingContact = getMissingBudgetContactFields(conv);
-  if (missingContact.length) {
-    throw new Error(
-      `Antes de crear el presupuesto debes pedir estos datos de contacto en un unico mensaje: ${missingContact.join(", ")}.`
-    );
-  }
-
-  const amount = Number(input?.amount_eur) || 0;
-  if (amount < MIN_BUDGET_AMOUNT_EUR) {
-    throw new Error(
-      `El importe calculado (${amount || 0} EUR) está por debajo del mínimo de obra de ${MIN_BUDGET_AMOUNT_EUR} EUR. No generes presupuesto; explica el mínimo y pregunta si quiere agrupar más trabajos.`
-    );
-  }
-}
-
-function buildPreBudgetGuardReplyStrict(conv) {
-  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
-  if (permissionStatus === "denied") return ownerPermissionDeniedMessage();
-
-  const contactReply = buildMissingBudgetContactReply(conv);
-  if (contactReply) return contactReply;
-
-  if (permissionStatus !== "confirmed") {
-    return "Antes de enviarte la confirmacion por email necesito comprobar una cosa: eres propietario o tienes permiso del dueno para hacer la reforma?";
-  }
-
-  return (
-    "Ya tengo la informacion principal. Para mostrarte el presupuesto orientativo te enviare primero un enlace de confirmacion al email. " +
-    "Cuando lo abras, el presupuesto aparecera en este chat."
-  );
-}
-
-function assertBudgetCanBeCreatedStrict(input, conv) {
-  const missingContact = getMissingBudgetContactFields(conv);
-  if (missingContact.length) {
-    throw new Error(
-      `Antes de crear el presupuesto debes pedir solo este dato de contacto que falta: ${missingContact[0]}. No pidas todos los datos juntos.`
-    );
-  }
-
-  const permissionStatus = getOwnerPermissionStatus(conv?.messages || []);
-  if (permissionStatus === "denied") {
-    throw new Error(
-      "El cliente ha indicado que no es propietario ni tiene permiso. No generes presupuesto; explicalo con educacion."
-    );
-  }
-  if (permissionStatus !== "confirmed") {
-    throw new Error(
-      "Antes de crear el presupuesto debes preguntar si el cliente es propietario o tiene permiso del dueno para hacer la reforma."
-    );
-  }
-
-  const amount = Number(input?.amount_eur) || 0;
-  if (amount < MIN_BUDGET_AMOUNT_EUR) {
-    throw new Error(
-      `El importe calculado (${amount || 0} EUR) esta por debajo del minimo de obra de ${MIN_BUDGET_AMOUNT_EUR} EUR. No generes presupuesto; explica el minimo y pregunta si quiere agrupar mas trabajos.`
-    );
-  }
 }
 
 async function fetchBudgetConfirmations(budgetIds) {
@@ -1628,107 +1535,6 @@ async function fetchLeadStatsByEmail(email) {
     return null;
   }
   return data || null;
-}
-
-async function recordLeadBudgetRequest(email, conversationId) {
-  const normalized = normalizeEmail(email);
-  if (!normalized) throw new Error("Falta un email valido para confirmar el presupuesto.");
-
-  const now = new Date().toISOString();
-  const { data: existing, error: selectError } = await supabase
-    .from("bot_leads")
-    .select("email, budget_request_count, email_confirmed_budget_count")
-    .eq("email", normalized)
-    .maybeSingle();
-  if (selectError) throw selectError;
-
-  if (existing) {
-    const nextCount = Number(existing.budget_request_count || 0) + 1;
-    const { data, error } = await supabase
-      .from("bot_leads")
-      .update({
-        budget_request_count: nextCount,
-        last_conversation_id: conversationId,
-        updated_at: now,
-      })
-      .eq("email", normalized)
-      .select("email, budget_request_count, email_confirmed_budget_count")
-      .single();
-    if (error) throw error;
-    return data;
-  }
-
-  const { data, error } = await supabase
-    .from("bot_leads")
-    .insert({
-      email: normalized,
-      first_conversation_id: conversationId,
-      last_conversation_id: conversationId,
-      budget_request_count: 1,
-      email_confirmed_budget_count: 0,
-    })
-    .select("email, budget_request_count, email_confirmed_budget_count")
-    .single();
-  if (error) throw error;
-  return data;
-}
-
-async function registerBudgetEmailConfirmation(budget, conv) {
-  const email = normalizeEmail(conv.customer_email);
-  if (!email) throw new Error("Falta email del cliente. Pidelo antes de crear el presupuesto.");
-
-  const lead = await recordLeadBudgetRequest(email, conv.id);
-  const rawToken = generateConfirmationToken();
-  const tokenHash = hashConfirmationToken(rawToken);
-  const confirmUrl = `${PUBLIC_URL}/api/budget/${budget.id}/confirm?token=${rawToken}`;
-
-  const { error } = await supabase
-    .from("bot_budget_email_confirmations")
-    .insert({
-      budget_id: budget.id,
-      conversation_id: conv.id,
-      email,
-      token_hash: tokenHash,
-    });
-  if (error) throw error;
-
-  const requestCount = Number(lead?.budget_request_count || 1);
-  const firstName = String(conv.customer_name || "").trim().split(/\s+/)[0] || "";
-  const html = buildProfessionalBudgetEmailConfirmationHtml({
-    firstName,
-    email,
-    confirmUrl,
-    requestCount,
-  });
-  const text = [
-    `Hola${firstName ? ` ${firstName}` : ""},`,
-    "",
-    "Hemos preparado tu presupuesto orientativo de Renoveplac.",
-    "Para verlo en el chat, confirma primero que este correo es tuyo abriendo este enlace:",
-    "",
-    confirmUrl,
-    "",
-    `Solicitudes registradas con este email: ${requestCount}.`,
-    "",
-    "Si no has solicitado este presupuesto, puedes ignorar este mensaje.",
-  ].join("\n");
-
-  const sendResult = await safeSendEmail({
-    to: email,
-    replyTo: COMPANY_EMAIL,
-    subject: "Confirma tu email para ver el presupuesto de Renoveplac",
-    text,
-    html,
-  }, "budget/email-confirmation");
-  if (sendResult?.error || sendResult?.mocked) {
-    await supabase
-      .from("bot_budget_email_confirmations")
-      .delete()
-      .eq("budget_id", budget.id);
-    throw new Error(`No se pudo enviar el email de confirmación: ${sendResult.error || "SMTP no configurado"}`);
-  }
-
-  return { email, confirmUrl, requestCount };
 }
 
 function buildBudgetEmailConfirmationHtml({ firstName, email, confirmUrl, requestCount }) {
@@ -1818,160 +1624,6 @@ function buildBudgetEmailConfirmationHtml({ firstName, email, confirmUrl, reques
     </table>
   </body>
 </html>`;
-}
-
-function buildProfessionalBudgetEmailConfirmationHtml({ firstName, email, confirmUrl, requestCount }) {
-  const greeting = firstName ? `Hola ${escapeHtml(firstName)},` : "Hola,";
-  const safeEmail = escapeHtml(email);
-  const safeUrl = escapeHtml(confirmUrl);
-  const count = Number(requestCount || 1);
-
-  return `<!doctype html>
-<html lang="es">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
-    <meta name="supported-color-schemes" content="light">
-    <title>Confirma tu email para ver el presupuesto</title>
-  </head>
-  <body style="margin:0;padding:0;background:#eef4f1;font-family:Arial,Helvetica,sans-serif;color:#11231f;">
-    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
-      Renoveplac ha preparado tu presupuesto orientativo. Confirma tu email para acceder de forma segura.
-    </div>
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef4f1;margin:0;padding:30px 12px;">
-      <tr>
-        <td align="center">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border:1px solid #dce7e1;border-radius:18px;overflow:hidden;box-shadow:0 18px 46px rgba(15,47,39,0.12);">
-            <tr>
-              <td style="background:#143c32;padding:26px 30px;">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                  <tr>
-                    <td>
-                      <div style="font-size:24px;line-height:1.1;font-weight:800;color:#ffffff;letter-spacing:.2px;">Renoveplac</div>
-                      <div style="margin-top:7px;font-size:13px;line-height:1.4;color:#cfe1da;">Reformas integrales, pladur y baños en Llíria y alrededores</div>
-                    </td>
-                    <td align="right" style="vertical-align:top;">
-                      <span style="display:inline-block;background:#ff7821;color:#ffffff;border-radius:999px;padding:8px 13px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;">Acceso seguro</span>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:32px 30px 12px;">
-                <p style="margin:0 0 12px;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:#ff7821;">Verificación de solicitud</p>
-                <h1 style="margin:0 0 16px;font-size:28px;line-height:1.18;color:#102820;">Confirma tu email para acceder a tu presupuesto</h1>
-                <p style="margin:0 0 18px;font-size:16px;line-height:1.6;color:#33443f;">${greeting}</p>
-                <p style="margin:0 0 20px;font-size:16px;line-height:1.65;color:#33443f;">
-                  Hemos preparado una estimación orientativa a partir de los datos que nos has indicado en el chat. Antes de mostrarla, necesitamos confirmar que <strong style="color:#143c32;">${safeEmail}</strong> es tu correo.
-                </p>
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7faf8;border:1px solid #dbe7e1;border-radius:14px;margin:0 0 24px;">
-                  <tr>
-                    <td style="padding:18px 18px 16px;">
-                      <p style="margin:0 0 8px;font-size:15px;font-weight:800;color:#143c32;">Tu presupuesto queda reservado</p>
-                      <p style="margin:0;font-size:14px;line-height:1.6;color:#40534d;">
-                        Al confirmar este enlace, Renovebot abrirá el presupuesto en tu conversación y nuestro equipo podrá identificar correctamente tu solicitud.
-                      </p>
-                    </td>
-                  </tr>
-                </table>
-                <table role="presentation" cellspacing="0" cellpadding="0" style="margin:28px 0 24px;">
-                  <tr>
-                    <td align="center" style="border-radius:12px;background:#ff7821;box-shadow:0 8px 18px rgba(255,120,33,.24);">
-                      <a href="${safeUrl}" style="display:inline-block;padding:16px 26px;border-radius:12px;background:#ff7821;color:#ffffff;text-decoration:none;font-size:16px;font-weight:800;">
-                        Confirmar email y abrir presupuesto
-                      </a>
-                    </td>
-                  </tr>
-                </table>
-                <p style="margin:-12px 0 24px;font-size:13px;line-height:1.5;color:#66736f;">El botón te llevará a una pantalla segura de confirmación. Después volverás al chat para ver el presupuesto.</p>
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7faf8;border:1px solid #dbe7e1;border-radius:14px;margin:0 0 22px;">
-                  <tr>
-                    <td style="padding:18px 18px 16px;">
-                      <p style="margin:0 0 12px;font-size:14px;font-weight:800;color:#143c32;text-transform:uppercase;letter-spacing:.4px;">Por qué hacemos esta verificación</p>
-                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                        <tr>
-                          <td width="28" style="vertical-align:top;padding:2px 10px 10px 0;"><span style="display:inline-block;width:24px;height:24px;border-radius:50%;background:#143c32;color:#ffffff;text-align:center;line-height:24px;font-size:13px;font-weight:800;">1</span></td>
-                          <td style="padding:0 0 10px;font-size:14px;line-height:1.55;color:#40534d;">Comprobamos que el correo pertenece a la persona que ha solicitado el presupuesto.</td>
-                        </tr>
-                        <tr>
-                          <td width="28" style="vertical-align:top;padding:2px 10px 10px 0;"><span style="display:inline-block;width:24px;height:24px;border-radius:50%;background:#143c32;color:#ffffff;text-align:center;line-height:24px;font-size:13px;font-weight:800;">2</span></td>
-                          <td style="padding:0 0 10px;font-size:14px;line-height:1.55;color:#40534d;">Protegemos tus datos de contacto y evitamos solicitudes realizadas con correos ajenos.</td>
-                        </tr>
-                        <tr>
-                          <td width="28" style="vertical-align:top;padding:2px 10px 0 0;"><span style="display:inline-block;width:24px;height:24px;border-radius:50%;background:#143c32;color:#ffffff;text-align:center;line-height:24px;font-size:13px;font-weight:800;">3</span></td>
-                          <td style="padding:0;font-size:14px;line-height:1.55;color:#40534d;">Dejamos la solicitud bien identificada para que Renoveplac pueda revisarla correctamente.</td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 24px;">
-                  <tr>
-                    <td style="padding:14px 16px;border-left:4px solid #ff7821;background:#fff8f3;border-radius:10px;">
-                      <p style="margin:0;font-size:14px;line-height:1.55;color:#5c4b3f;"><strong style="color:#143c32;">Nota de seguridad:</strong> este enlace solo confirma tu email. El presupuesto es orientativo y se revisará después de la visita técnica, tomando medidas y definiendo materiales.</p>
-                    </td>
-                  </tr>
-                </table>
-                <p style="margin:0 0 8px;font-size:13px;line-height:1.5;color:#66736f;">Si el botón no funciona, también puedes copiar y pegar este enlace en tu navegador:</p>
-                <p style="margin:0 0 24px;font-size:13px;line-height:1.5;word-break:break-all;">
-                  <a href="${safeUrl}" style="color:#143c32;text-decoration:underline;">${safeUrl}</a>
-                </p>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:0 30px 30px;">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #edf1ef;padding-top:18px;">
-                  <tr>
-                    <td style="font-size:13px;line-height:1.65;color:#6b7773;">
-                      Solicitudes de presupuesto registradas con este email: <strong style="color:#143c32;">${count}</strong><br>
-                      Si tú no has solicitado este presupuesto, puedes ignorar este mensaje sin realizar ninguna acción.
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-          </table>
-          <p style="max-width:640px;margin:16px auto 0;font-size:12px;line-height:1.5;color:#7a8581;text-align:center;">
-            Renoveplac · Reformas integrales, pladur, baños, cocinas, pintura y trabajos de albañilería.
-          </p>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`;
-}
-
-async function rollbackBudgetCreation(budget, conv) {
-  if (!budget?.id) return;
-  await supabase
-    .from("bot_budget_email_confirmations")
-    .delete()
-    .eq("budget_id", budget.id);
-  await supabase
-    .from("bot_budgets")
-    .delete()
-    .eq("id", budget.id);
-  await supabase
-    .from("bot_conversations")
-    .update({ status: "active" })
-    .eq("id", conv.id);
-}
-
-function buildBudgetConfirmationMessage(confirmation, channel) {
-  const email = confirmation?.email || "tu email";
-  const countLine = confirmation?.requestCount
-    ? `\n\nSolicitudes registradas con este email: ${confirmation.requestCount}.`
-    : "";
-  const deliveryLine = channel === "whatsapp"
-    ? "\n\nAbre ese enlace desde tu correo y te enviaré el presupuesto por este mismo WhatsApp."
-    : "\n\nAbre ese enlace desde tu correo y el presupuesto aparecerá en este chat.";
-  return (
-    `Te he preparado el presupuesto orientativo. Para mostrártelo, te he enviado un enlace de confirmación a ${email}.` +
-    deliveryLine +
-    countLine
-  );
 }
 
 function buildEmailConfirmationRequiredMessage(confirmation) {
@@ -2074,45 +1726,6 @@ async function sendBudgetToWhatsapp(conv, budget, options = {}) {
     .single();
   if (error) console.warn("[whatsapp/budget] enviado pero no se pudo guardar mensaje:", error.message);
   return { ok: true, assistantMsgRow };
-}
-
-async function createConversationBudget(input, conv, fullConv) {
-  if (isElectricConversation(fullConv) || isElectricConversation(conv)) {
-    throw new Error(
-      "Este cliente solicita un servicio de electricidad: no se crean presupuestos con importe. Recoge sus datos y usa register_electric_request."
-    );
-  }
-  assertBudgetCanBeCreatedStrict(input, fullConv);
-  if (!normalizeEmail(conv.customer_email)) {
-    throw new Error("Falta email del cliente. Pide un email valido antes de generar el presupuesto.");
-  }
-
-  const { data: budget, error } = await supabase
-    .from("bot_budgets")
-    .insert({
-      conversation_id: conv.id,
-      title: input.title,
-      description: input.description,
-      amount_eur: Number(input.amount_eur) || 0,
-      iva_included: !!input.iva_included,
-    })
-    .select()
-    .single();
-  if (error) throw error;
-
-  await supabase
-    .from("bot_conversations")
-    .update({ status: "budget_sent" })
-    .eq("id", conv.id);
-
-  try {
-    const confirmation = await registerBudgetEmailConfirmation(budget, conv);
-    budget.email_confirmation = confirmation;
-    return budget;
-  } catch (err) {
-    await rollbackBudgetCreation(budget, conv);
-    throw err;
-  }
 }
 
 async function notifyHumanFromWeb(input, conv) {
@@ -2442,14 +2055,6 @@ async function requestHumanHandoff(conv, options = {}) {
   return { assistantMsgRow, reply };
 }
 
-async function requestAppointmentSchedulingHandoff(conv) {
-  return requestHumanHandoff(conv, {
-    reason: "El cliente pide agendar una cita o visita. El equipo debe contactar para confirmar dia y hora.",
-    subject: `Cliente pide cita - ${conv.customer_name || conv.customer_phone || "lead Renoveplac"}`,
-    reply: buildAppointmentSchedulingReply(conv, { notified: true }),
-  });
-}
-
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 app.get("/admin", (_req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
 
@@ -2693,49 +2298,24 @@ app.post("/api/chat", async (req, res) => {
       userMsgRow || { role: "user", content: userMessage || (imageUrl ? "(imagen)" : ""), image_url: imageUrl || null },
     ];
 
-    let botReply = "";
-    let createdBudget = null;
-    let assistantMsgRow = null;
-
-    if (ACCEPT_BUDGET_REGEX.test(userMessage)) {
-      const accepted = await acceptPendingBudgetFromChat(conv);
-      return res.json({
-        reply: accepted.reply,
+    const reply = (result) =>
+      res.json({
+        reply: result.reply,
         conversationId: conv.id,
         accessToken: conv.access_token,
-        botEnabled: conv.bot_enabled !== false,
-        budget: accepted.budget,
+        botEnabled: result.botEnabled !== undefined ? result.botEnabled : conv.bot_enabled !== false,
+        budget: result.budget || null,
         userMessage: userMsgRow,
-        assistantMessage: accepted.assistantMsgRow,
+        assistantMessage: result.assistantMsgRow || null,
       });
+
+    // Presupuestos antiguos: solo se aceptan si hay uno pendiente.
+    if (ACCEPT_BUDGET_REGEX.test(userMessage) && (await fetchLatestPendingBudget(conv.id))) {
+      return reply(await acceptPendingBudgetFromChat(conv));
     }
 
-    if (
-      conv.bot_enabled !== false &&
-      !isElectricConversation(conv) &&
-      ownerPermissionDeniedByLatestReply(userMessage, previousMessages)
-    ) {
-      botReply = ownerPermissionDeniedMessage();
-      const { data } = await supabase
-        .from("bot_messages")
-        .insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: botReply,
-        })
-        .select()
-        .single();
-      assistantMsgRow = data;
-
-      return res.json({
-        reply: botReply,
-        conversationId: conv.id,
-        accessToken: conv.access_token,
-        botEnabled: true,
-        budget: null,
-        userMessage: userMsgRow,
-        assistantMessage: assistantMsgRow,
-      });
+    if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, previousMessages)) {
+      return reply(await insertAssistantReply(conv, ownerPermissionDeniedMessage()));
     }
 
     const leadPatch = buildLeadPatch(conv, userMessage, conv.messages || []);
@@ -2745,207 +2325,38 @@ app.post("/api/chat", async (req, res) => {
       (phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage)));
 
     if (conv.bot_enabled !== false && phoneAttempted && !phoneStatus.valid) {
-      botReply = INVALID_PHONE_REPLY;
-      const { data } = await supabase
-        .from("bot_messages")
-        .insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: botReply,
-        })
-        .select()
-        .single();
-      assistantMsgRow = data;
-
-      return res.json({
-        reply: botReply,
-        conversationId: conv.id,
-        accessToken: conv.access_token,
-        botEnabled: true,
-        budget: null,
-        userMessage: userMsgRow,
-        assistantMessage: assistantMsgRow,
-      });
+      return reply(await insertAssistantReply(conv, INVALID_PHONE_REPLY));
     }
 
     await updateLeadData(conv, leadPatch);
 
-    if (conv.bot_enabled !== false && findExcludedTown(userMessage)) {
-      botReply = OUT_OF_AREA_REPLY;
-      const { data } = await supabase
-        .from("bot_messages")
-        .insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: botReply,
-        })
-        .select()
-        .single();
-      assistantMsgRow = data;
-
-      return res.json({
-        reply: botReply,
-        conversationId: conv.id,
-        accessToken: conv.access_token,
-        botEnabled: true,
-        budget: null,
-        userMessage: userMsgRow,
-        assistantMessage: assistantMsgRow,
-      });
+    if (conv.bot_enabled === false) {
+      return reply({ reply: "", botEnabled: false });
     }
 
-    if (conv.bot_enabled !== false && isAppointmentSchedulingRequest(userMessage, previousMessages)) {
-      try {
-        const result = await requestAppointmentSchedulingHandoff({ ...conv, messages: conv.messages || [] });
-        return res.json({
-          reply: result.reply,
-          conversationId: conv.id,
-          accessToken: conv.access_token,
-          botEnabled: false,
-          budget: null,
-          appointmentSchedulingRequested: true,
-          userMessage: userMsgRow,
-          assistantMessage: result.assistantMsgRow,
-        });
-      } catch (err) {
-        console.error("[appointment-handoff]", err);
-        botReply = buildAppointmentSchedulingReply(conv);
-        const { data } = await supabase
-          .from("bot_messages")
-          .insert({
-            conversation_id: conv.id,
-            role: "assistant",
-            content: botReply,
-          })
-          .select()
-          .single();
-        assistantMsgRow = data;
-
-        return res.json({
-          reply: botReply,
-          conversationId: conv.id,
-          accessToken: conv.access_token,
-          botEnabled: true,
-          budget: null,
-          appointmentSchedulingRequested: true,
-          appointmentSchedulingNoticeFailed: true,
-          userMessage: userMsgRow,
-          assistantMessage: assistantMsgRow,
-        });
-      }
+    if (findExcludedTown(userMessage)) {
+      return reply(await insertAssistantReply(conv, OUT_OF_AREA_REPLY));
     }
 
-    if (conv.bot_enabled !== false && isHumanHandoffRequest(userMessage)) {
-      botReply = buildHumanHandoffOfferMessage(conv);
-      const { data } = await supabase
-        .from("bot_messages")
-        .insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: botReply,
-        })
-        .select()
-        .single();
-      assistantMsgRow = data;
+    const humanContact = await handleHumanContactRequest(conv, userMessage, previousMessages, leadPatch);
+    if (humanContact) return reply(humanContact);
 
-      return res.json({
-        reply: botReply,
-        conversationId: conv.id,
-        accessToken: conv.access_token,
-        botEnabled: true,
-        budget: null,
-        humanHandoffOffered: true,
-        userMessage: userMsgRow,
-        assistantMessage: assistantMsgRow,
-      });
+    if (isAppointmentSchedulingRequest(userMessage, previousMessages)) {
+      return reply(await insertAssistantReply(conv, buildAppointmentSchedulingReply(conv)));
     }
 
-    if (conv.bot_enabled !== false) {
-      const systemPrompt = buildSystemPrompt(buildContext(conv));
-      const history = toAnthropicMessages(conv.messages || []);
-
-      let result = await runConversation({
-        systemPrompt,
-        messages: history,
-        onBudget: (input) => createConversationBudget(input, conv, { ...conv, messages: conv.messages || [] }),
-        onNotifyHuman: (input) => notifyHumanFromWeb(input, conv),
-        onElectricRequest: (input) => registerElectricRequest(input, conv, conv, "web"),
-      });
-
-      if (!result.budget && !isElectricConversation(conv) && looksLikeBudgetPreparationPromise(result.text)) {
-        console.warn(`[chat] ${conv.id}: el modelo prometio presupuesto sin herramienta; forzando create_budget`);
-        result = await runConversation({
-          systemPrompt:
-            systemPrompt +
-            "\n\nINSTRUCCION CRITICA DEL SERVIDOR: no digas que has preparado, dejado o enviado un presupuesto si no llamas a create_budget. Si estan los datos obligatorios, llama ahora a create_budget. Si falta un dato, pide solo ese dato concreto.",
-          messages: [
-            ...history,
-            { role: "assistant", content: String(result.text || "").slice(0, 1200) },
-            {
-              role: "user",
-              content:
-                "No prometas ni confirmes un presupuesto en texto libre. Genera ahora el presupuesto con create_budget si tienes los datos obligatorios; si falta algo, dime exactamente que falta.",
-            },
-          ],
-          onBudget: (input) => createConversationBudget(input, conv, { ...conv, messages: conv.messages || [] }),
-          onNotifyHuman: (input) => notifyHumanFromWeb(input, conv),
-          onElectricRequest: (input) => registerElectricRequest(input, conv, conv, "web"),
-          maxTokens: Math.max(650, Number(process.env.ANTHROPIC_MAX_TOKENS) || 650),
-        });
-      }
-
-      botReply = result.text || "";
-      createdBudget = result.budget;
-      if (result.electricRequest) {
-        botReply = buildElectricClosingReply(conv);
-      } else if (isElectricConversation(conv) && !createdBudget) {
-        if (looksLikeElectricPriceReply(botReply)) botReply = buildElectricNoPriceReply(conv);
-      } else if (createdBudget) {
-        if (createdBudget.email_confirmation) {
-          botReply = buildBudgetConfirmationMessage(createdBudget.email_confirmation);
-        } else {
-          botReply = addBudgetAcceptanceHint(botReply, true);
-        }
-      } else if (
-        looksLikeBlockedBudgetReply(botReply) ||
-        looksLikeBudgetPreparationPromise(botReply) ||
-        looksLikeBatchContactDataRequest(botReply) ||
-        (getMissingBudgetContactFields(conv).length && looksLikeOwnerPermissionQuestion(botReply))
-      ) {
-        botReply = buildPreBudgetGuardReplyStrict({ ...conv, messages: conv.messages || [] });
-      }
-      if (!createdBudget && looksLikeNoPhotoPermissionConfusion(botReply, userMessage)) {
-        botReply = buildNoPhotoContinueReply(conv);
-      }
-      if (looksLikeAppointmentSchedulingReply(botReply)) {
-        botReply = buildAppointmentSchedulingReply(conv);
-      }
-      if (!createdBudget) botReply = addElectricInfoLinks(botReply, userMessage, conv);
-
-      if (botReply) {
-        const { data } = await supabase
-          .from("bot_messages")
-          .insert({
-            conversation_id: conv.id,
-            role: "assistant",
-            content: botReply,
-          })
-          .select()
-          .single();
-        assistantMsgRow = data;
-      }
-    }
-
-    return res.json({
-      reply: botReply,
-      conversationId: conv.id,
-      accessToken: conv.access_token,
-      botEnabled: conv.bot_enabled !== false,
-      budget: createdBudget?.email_confirmation ? null : createdBudget,
-      pendingBudgetEmailConfirmation: createdBudget?.email_confirmation || null,
-      userMessage: userMsgRow,
-      assistantMessage: assistantMsgRow,
+    const systemPrompt = buildSystemPrompt(buildContext(conv));
+    const history = toAnthropicMessages(conv.messages || []);
+    const result = await runConversation({
+      systemPrompt,
+      messages: history,
+      onNotifyHuman: (input) => notifyHumanFromWeb(input, conv),
+      onRequest: (input) => registerRequest(input, conv, conv, "web"),
     });
+
+    const botReply = finalizeBotReply(result, userMessage, conv);
+    if (!botReply) return reply({ reply: "" });
+    return reply(await insertAssistantReply(conv, botReply));
   } catch (err) {
     console.error("[chat]", err);
     if (isSupabaseConnectionError(err)) {
@@ -3497,6 +2908,13 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         console.error("[whatsapp] error descargando video:", err.message);
       }
       userMessage = `(vídeo)${wamsg.video?.caption ? ` ${wamsg.video.caption}` : ""}`;
+    } else if (msgType === "location") {
+      const loc = wamsg.location || {};
+      const label = [loc.name, loc.address].filter(Boolean).join(", ");
+      userMessage = `(ubicación)${label ? ` ${label}` : ""}`;
+      if (loc.latitude != null && loc.longitude != null) {
+        userMessage += `\nUbicación: https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`;
+      }
     } else {
       userMessage = `(tipo de mensaje no soportado: ${msgType})`;
     }
@@ -3613,12 +3031,8 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       },
     ];
 
-    if (
-      conv.bot_enabled !== false &&
-      !isElectricConversation(conv) &&
-      ownerPermissionDeniedByLatestReply(userMessage, previousMessages)
-    ) {
-      const reply = ownerPermissionDeniedMessage();
+    // Guarda la respuesta del bot y la envia por WhatsApp.
+    const sendReply = async (reply, label) => {
       await supabase.from("bot_messages").insert({
         conversation_id: conv.id,
         role: "assistant",
@@ -3627,152 +3041,68 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       const sendStartedAt = Date.now();
       const sendResult = await wa.sendText(from, reply);
       console.log(
-        `[whatsapp] ${waMessageId}: permiso propietario denegado respondido en ${Date.now() - sendStartedAt}ms ` +
+        `[whatsapp] ${waMessageId}: ${label} en ${Date.now() - sendStartedAt}ms ` +
           `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
       );
+    };
+
+    if (conv.bot_enabled !== false && ownerPermissionDeniedByLatestReply(userMessage, previousMessages)) {
+      await sendReply(ownerPermissionDeniedMessage(), "permiso propietario denegado respondido");
       return;
     }
 
-    // El enlace del video no debe confundirse con telefonos o codigos postales.
-    const parseableMessage = userMessage.replace(/\nVídeo: \S+/g, "");
+    // Los enlaces de video o ubicacion no deben confundirse con telefonos o codigos postales.
+    const parseableMessage = userMessage.replace(/\n(?:Vídeo|Ubicación): \S+/g, "");
     const leadPatch = buildLeadPatch(conv, parseableMessage, messagesWithCurrent);
     await updateLeadData(conv, leadPatch);
 
     if (conv.bot_enabled === false) return;
 
     if (findExcludedTown(parseableMessage)) {
-      await supabase.from("bot_messages").insert({
-        conversation_id: conv.id,
-        role: "assistant",
-        content: OUT_OF_AREA_REPLY,
-      });
-      const sendStartedAt = Date.now();
-      const sendResult = await wa.sendText(from, OUT_OF_AREA_REPLY);
-      console.log(
-        `[whatsapp] ${waMessageId}: zona sin servicio respondida en ${Date.now() - sendStartedAt}ms ` +
-          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-      );
+      await sendReply(OUT_OF_AREA_REPLY, "zona sin servicio respondida");
       return;
     }
 
-    if (isAppointmentSchedulingRequest(userMessage, previousMessages)) {
-      try {
-        const result = await requestAppointmentSchedulingHandoff({ ...conv, messages: messagesWithCurrent });
-        const sendStartedAt = Date.now();
-        const sendResult = await wa.sendText(from, result.reply);
-        console.log(
-          `[whatsapp] ${waMessageId}: cita derivada al equipo en ${Date.now() - sendStartedAt}ms ` +
-            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-        );
-      } catch (err) {
-        console.error("[whatsapp/appointment-handoff]", err);
-        const fallback = buildAppointmentSchedulingReply(conv);
-        await supabase.from("bot_messages").insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: fallback,
-        });
-        const sendStartedAt = Date.now();
-        const sendResult = await wa.sendText(from, fallback);
-        console.log(
-          `[whatsapp] ${waMessageId}: cita respondida sin aviso en ${Date.now() - sendStartedAt}ms ` +
-            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-        );
-      }
-      return;
-    }
-
+    // Presupuestos antiguos pendientes: el cliente puede pedir verlos de nuevo.
     if (isBudgetViewRequest(userMessage)) {
       const pendingBudget = await fetchLatestPendingBudget(conv.id);
       if (pendingBudget) {
         const confirmation = await fetchBudgetConfirmation(pendingBudget.id);
         if (confirmation && !confirmation.confirmed_at) {
-          const reply = buildEmailConfirmationRequiredMessage(confirmation);
-          await supabase.from("bot_messages").insert({
-            conversation_id: conv.id,
-            role: "assistant",
-            content: reply,
-          });
-          const sendStartedAt = Date.now();
-          const sendResult = await wa.sendText(from, reply);
-          console.log(
-            `[whatsapp] ${waMessageId}: presupuesto pendiente de email respondido en ${Date.now() - sendStartedAt}ms ` +
-              `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-          );
+          await sendReply(buildEmailConfirmationRequiredMessage(confirmation), "presupuesto pendiente de email respondido");
           return;
         }
-
-        const sendStartedAt = Date.now();
-        const delivery = await sendBudgetToWhatsapp(
-          conv,
-          pendingBudget,
-          {
-            allowDuplicate: true,
-            intro: "Claro. Te dejo por aquí el presupuesto orientativo:",
-          }
-        );
-        console.log(
-          `[whatsapp] ${waMessageId}: presupuesto reenviado en ${Date.now() - sendStartedAt}ms ` +
-            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!delivery.ok})`
-        );
+        const delivery = await sendBudgetToWhatsapp(conv, pendingBudget, {
+          allowDuplicate: true,
+          intro: "Claro. Te dejo por aquí el presupuesto orientativo:",
+        });
+        console.log(`[whatsapp] ${waMessageId}: presupuesto reenviado (ok=${!!delivery.ok})`);
         return;
       }
     }
 
-    if (isHumanHandoffRequest(userMessage)) {
-      try {
-        const result = await requestHumanHandoff(
-          { ...conv, messages: messagesWithCurrent },
-          { reason: "El cliente pide hablar con una persona por WhatsApp" }
-        );
-        const sendStartedAt = Date.now();
-        const sendResult = await wa.sendText(from, result.reply);
-        console.log(
-          `[whatsapp] ${waMessageId}: humano avisado en ${Date.now() - sendStartedAt}ms ` +
-            `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-        );
-      } catch (err) {
-        console.error("[whatsapp/human-handoff]", err);
-        const fallback = "Ahora mismo no he podido avisar al equipo automaticamente. Si puedes, intenta escribirnos de nuevo en unos minutos.";
-        await supabase.from("bot_messages").insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: fallback,
-        });
-        await wa.sendText(from, fallback);
-      }
+    const fullConv = { ...conv, messages: messagesWithCurrent };
+    const humanContact = await handleHumanContactRequest(conv, parseableMessage, previousMessages, leadPatch);
+    if (humanContact) {
+      const sendResult = await wa.sendText(from, humanContact.reply);
+      console.log(`[whatsapp] ${waMessageId}: peticion de persona respondida (ok=${!!sendResult.ok})`);
+      return;
+    }
+
+    if (isAppointmentSchedulingRequest(userMessage, previousMessages)) {
+      await sendReply(buildAppointmentSchedulingReply(conv), "cita respondida sin cerrar fecha");
       return;
     }
 
     const fastPendingReply = getFastWhatsappPendingReply(userMessage, { ...conv, messages: previousMessages });
     if (fastPendingReply) {
-      await supabase.from("bot_messages").insert({
-        conversation_id: conv.id,
-        role: "assistant",
-        content: fastPendingReply,
-      });
-      const sendStartedAt = Date.now();
-      const sendResult = await wa.sendText(from, fastPendingReply);
-      console.log(
-        `[whatsapp] ${waMessageId}: recordatorio rapido enviado en ${Date.now() - sendStartedAt}ms ` +
-          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-      );
+      await sendReply(fastPendingReply, "recordatorio rapido enviado");
       return;
     }
 
     const fastGreetingReply = getFastWhatsappGreetingReply(userMessage, { ...conv, messages: previousMessages });
     if (fastGreetingReply) {
-      await supabase.from("bot_messages").insert({
-        conversation_id: conv.id,
-        role: "assistant",
-        content: fastGreetingReply,
-      });
-      const sendStartedAt = Date.now();
-      const sendResult = await wa.sendText(from, fastGreetingReply);
-      console.log(
-        `[whatsapp] ${waMessageId}: saludo rapido enviado en ${Date.now() - sendStartedAt}ms ` +
-          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-      );
+      await sendReply(fastGreetingReply, "saludo rapido enviado");
       return;
     }
 
@@ -3781,29 +3111,16 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       !leadPatch.customer_email &&
       (phoneStatus.attempted || (botRecentlyAskedForPhone(messagesWithCurrent) && /\d/.test(parseableMessage)));
     if (phoneAttempted && !phoneStatus.valid) {
-      await supabase.from("bot_messages").insert({
-        conversation_id: conv.id,
-        role: "assistant",
-        content: INVALID_PHONE_REPLY,
-      });
-      const sendStartedAt = Date.now();
-      const sendResult = await wa.sendText(from, INVALID_PHONE_REPLY);
-      console.log(
-        `[whatsapp] ${waMessageId}: telefono invalido respondido en ${Date.now() - sendStartedAt}ms ` +
-          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-      );
+      await sendReply(INVALID_PHONE_REPLY, "telefono invalido respondido");
       return;
     }
 
-    const fullConv = { ...conv, messages: messagesWithCurrent };
     const systemPrompt = buildSystemPrompt(
       buildContext(fullConv) +
-        "\nCANAL: WhatsApp. El cliente NO tiene botones; para aceptar un presupuesto debe responder 'ACEPTO'." +
-        "\nSi ya tienes datos suficientes y el cliente pide presupuesto, usa create_budget en este mismo turno. No respondas que lo prepararas mas tarde." +
-        `\nEl cliente escribe desde el WhatsApp ${from}. En electricidad, pregunta si ese es su telefono de contacto; si lo confirma, usa ese numero.` +
-        "\nSi el cliente envia un video, te llegara como '(vídeo)': no puedes verlo, agradeceselo y di que el equipo lo revisara."
+        "\nCANAL: WhatsApp. El cliente puede enviar fotos, videos y su ubicacion de WhatsApp." +
+        `\nEl cliente escribe desde el WhatsApp ${from}. Pregunta si ese es su telefono de contacto; si lo confirma, usa ese numero.`
     );
-    const modelMessages = prepareWhatsappModelMessages(fullConv?.messages || [], {
+    const modelMessages = prepareWhatsappModelMessages(fullConv.messages || [], {
       forceLatestUserImage: msgType === "image" && !!imageUrl,
     });
     const history = toAnthropicMessages(modelMessages);
@@ -3814,91 +3131,17 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     );
 
     const modelStartedAt = Date.now();
-    let result = await runConversation({
+    const result = await runConversation({
       systemPrompt,
       messages: history,
-      onBudget: (input) => createConversationBudget(input, conv, fullConv),
       onNotifyHuman: (input) => notifyHumanFromWhatsapp(input, conv, from),
-      onElectricRequest: (input) => registerElectricRequest(input, conv, fullConv, "whatsapp"),
+      onRequest: (input) => registerRequest(input, conv, fullConv, "whatsapp"),
       maxTokens: WHATSAPP_MAX_TOKENS,
-      stopAfterBudget: true,
     });
-
-    if (!result.budget && !isElectricConversation(fullConv) && looksLikeBudgetPreparationPromise(result.text)) {
-      console.warn(`[whatsapp] ${waMessageId}: el modelo prometio presupuesto sin herramienta; forzando create_budget`);
-      const forcedSystemPrompt =
-        systemPrompt +
-        "\n\nINSTRUCCION CRITICA DEL SERVIDOR: no dejes al cliente esperando. Si estan los datos obligatorios, llama ahora a create_budget. Si falta un dato, pide solo ese dato concreto.";
-      result = await runConversation({
-        systemPrompt: forcedSystemPrompt,
-        messages: [
-          ...history,
-          { role: "assistant", content: String(result.text || "").slice(0, 1200) },
-          {
-            role: "user",
-            content:
-              "No prometas preparar el presupuesto mas tarde. Genera ahora el presupuesto con create_budget si tienes los datos obligatorios; si falta algo, dime exactamente que falta.",
-          },
-        ],
-        onBudget: (input) => createConversationBudget(input, conv, fullConv),
-        onNotifyHuman: (input) => notifyHumanFromWhatsapp(input, conv, from),
-        onElectricRequest: (input) => registerElectricRequest(input, conv, fullConv, "whatsapp"),
-        maxTokens: Math.max(WHATSAPP_MAX_TOKENS, 650),
-        stopAfterBudget: true,
-      });
-    }
     console.log(`[whatsapp] ${waMessageId}: modelo listo en ${Date.now() - modelStartedAt}ms`);
 
-    let botReply = result.text || "";
-    if (result.electricRequest) {
-      botReply = buildElectricClosingReply(fullConv);
-    } else if (isElectricConversation(fullConv) && !result.budget) {
-      if (looksLikeElectricPriceReply(botReply)) botReply = buildElectricNoPriceReply(fullConv);
-    } else if (result.budget) {
-      if (result.budget.email_confirmation) {
-        botReply = buildBudgetConfirmationMessage(result.budget.email_confirmation, "whatsapp");
-      } else {
-        const b = result.budget;
-        const ivaTxt = b.iva_included ? "(IVA incluido)" : "+ IVA aparte";
-        const card =
-          "\n\n━━━━━━━━━━━━━━━━━━\n" +
-          `📋 *PRESUPUESTO ORIENTATIVO*\n` +
-          `*${b.title}*\n` +
-          `Importe: *${Number(b.amount_eur).toLocaleString("es-ES")} €* ${ivaTxt}\n\n` +
-          `${b.description}\n` +
-          "━━━━━━━━━━━━━━━━━━\n\n" +
-          `Si te encaja, responde *ACEPTO* y un profesional de nuestro equipo te llamará para coordinar la visita técnica.`;
-        botReply = (botReply ? botReply + "\n" : "") + card;
-      }
-    } else if (
-      looksLikeBlockedBudgetReply(botReply) ||
-      looksLikeBudgetPreparationPromise(botReply) ||
-      looksLikeBatchContactDataRequest(botReply) ||
-      (getMissingBudgetContactFields(fullConv).length && looksLikeOwnerPermissionQuestion(botReply))
-    ) {
-      botReply = buildPreBudgetGuardReplyStrict(fullConv);
-    }
-    if (!result.budget && looksLikeNoPhotoPermissionConfusion(botReply, userMessage)) {
-      botReply = buildNoPhotoContinueReply(fullConv);
-    }
-    if (looksLikeAppointmentSchedulingReply(botReply)) {
-      botReply = buildAppointmentSchedulingReply(fullConv);
-    }
-    if (!result.budget) botReply = addElectricInfoLinks(botReply, parseableMessage, fullConv);
-
-    if (botReply) {
-      await supabase.from("bot_messages").insert({
-        conversation_id: conv.id,
-        role: "assistant",
-        content: botReply,
-      });
-      const sendStartedAt = Date.now();
-      const sendResult = await wa.sendText(from, botReply);
-      console.log(
-        `[whatsapp] ${waMessageId}: respuesta enviada en ${Date.now() - sendStartedAt}ms ` +
-          `(total ${Date.now() - webhookStartedAt}ms, ok=${!!sendResult.ok})`
-      );
-    }
+    const botReply = finalizeBotReply(result, parseableMessage, fullConv);
+    if (botReply) await sendReply(botReply, "respuesta enviada");
   } catch (err) {
     console.error("[whatsapp/webhook]", err);
   } finally {

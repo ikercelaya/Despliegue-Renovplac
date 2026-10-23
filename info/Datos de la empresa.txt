@@ -14,7 +14,7 @@ Dirección física: —
 Zonas geográficas que cubren (instrucciones del 22-10-2026, sustituyen a cualquier lista anterior):
 - Reformas y obra: Llíria y todo el Camp de Túria.
 - Electricidad: además de lo anterior, Paterna (incluida La Cañada) y Burjassot.
-- NO trabajamos en: Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba. Si escriben de allí, responder con amabilidad que por ahora no damos servicio en esa zona, sin dar explicaciones de disponibilidad.
+- NO trabajamos en: Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba. Comprobar siempre el pueblo antes de seguir. Si está fuera de zona: "Por ahora no damos servicio en esa zona. ¡Gracias por pensar en nosotros!", sin hablar de disponibilidad ni dar más explicaciones.
 Horario de atención:
 08:00 a 19:00
 ━━━ SERVICIOS Y PRODUCTOS ━━━
@@ -134,59 +134,24 @@ Cálculos estructurales
 Limpieza general
 Jardinería continua
 Mantenimiento de piscinas (solo obra/reforma, no mantenimiento periódico)
-Tabla de precios orientativos:
-Categoría	Servicio	Unidad	Precio (€)
-Albañilería	Muro bloque	€/m²	80
-Albañilería	Cimentación corrida	€/ml	85
-Albañilería	Lucido	€/m²	38
-Albañilería	Monocapa fachada	€/m²	55
-Albañilería	Demoliciones interiores	€/m²	32
-Pladur	Tabique pladur	€/m²	50
-Pladur	Trasdosado	€/m²	35
-Pladur	Falso techo	€/m²	35
-Pladur	Refuerzo estructura metálica	€	900
-Acabados	Alicatado paredes	€/m²	65
-Acabados	Solado porcelánico	€/m²	65
-Acabados	Rodapié	€/ml	15
-Reformas	Cambio plato ducha	€	2200
-Reformas	Baño completo	€	6500
-Instalaciones	Fontanería cocina	€	1200
-Instalaciones	Fontanería baño	€	1600
-Instalaciones	Instalación plato ducha	€	450
-Instalaciones	Instalación mampara (solo dentro de reforma de baño o cambio de plato)	€	180
-Obra	Apertura hueco ventana	€	400
-Obra	Colocación puerta	€	550
-Exteriores	Césped artificial	€/m²	60
-Exteriores	Hormigón impreso	€/m²	60
-Exteriores	Solera hormigón	€/m²	60
-Exteriores	Drenaje y rejillas	€/ml	120
-Piscinas	Piscina nueva	€/m²	770
-Piscinas	Reforma piscina	€/m²	550
-Piscinas	Depuradora	€	4200
-Cubiertas	Reparación tejado	€/m²	60
-Cubiertas	Tela asfáltica	€/m²	45
-General	Mínimo obra	€	600
-General	Jornada trabajador	€	320
-Política de presupuestos: Orientativo hasta visita técnica
+Política de precios: el asistente NUNCA da precios, rangos ni presupuestos con cifras (salvo enviar al simulador de placas solares). Un profesional del equipo prepara un presupuesto detallado por partidas, sin compromiso.
 ━━━ PRESUPUESTOS ━━━
-Margen mínimo para aceptar un presupuesto:
-35% de beneficio total
 ¿Se cobra el presupuesto?: Gratis siempre
-Plazo medio para entregar presupuesto: 48hs tras la visita
 Validez del presupuesto: 30 días
 Métodos de pago aceptados:
 Solo transferencia bancaria a la cuenta de la empresa todo con factura y garantía de 1 año sobre los trabajos ejecutados y los materiales suministrados por Renoveplac
 Forma habitual de cobro:
 50% al comenzar 50% al finalizar
 IVA en presupuesto: Aparte (se suma al final)
-Información necesaria del cliente para presupuestar:
-Metros cuadrados aproximados o dimensiones del espacio
-Fotografías actuales del estado de la zona a intervenir
-Ubicación de la obra (dirección o zona)
-Descripción de los trabajos que desea realizar
-Nivel de acabado deseado (básico, medio, alto)
-Plazo aproximado o urgencia
-Presupuesto orientativo (opcional, pero recomendable)
+Información que recoge el asistente para que el equipo prepare el presupuesto:
+Qué necesita (breve descripción)
+Pueblo (para comprobar la zona)
+Dirección de la obra y, si puede, ubicación de Google Maps o de WhatsApp
+Nombre
+Teléfono
+Fotos o un vídeo corto de la zona del trabajo (y del cuadro eléctrico o el contador si es de electricidad), si puede
+Si es el propietario o tiene permiso del propietario (si no, no se puede realizar el servicio)
+Cómo nos ha conocido
 Notas adicionales sobre presupuestos:
 PROCESO DE GESTIÓN DE PRESUPUESTOS
 
@@ -204,7 +169,7 @@ Ubicación de la obra
 Descripción del trabajo a realizar
 Cualquier dato relevante adicional
 Análisis de la información recibida.
-Elaboración del presupuesto estimado.
+Elaboración del presupuesto por un profesional del equipo.
 Envío al cliente.
 Seguimiento y espera de respuesta.
 
@@ -251,11 +216,6 @@ Ofrecer una experiencia profesional al cliente
 5. OBSERVACIÓN IMPORTANTE
 
 Dependiendo del tipo de trabajo, la empresa se reserva el derecho de determinar si el presupuesto puede realizarse de forma estimada o si requiere obligatoriamente una visita técnica previa.
-━━━ PRESUPUESTOS DE EJEMPLO ADJUNTOS ━━━
-3 archivos adjuntos a este email:
-📎 Chiva Paqui Reforma Piscina 15-08-25.pdf · application/pdf · 762 KB
-📎 Lliria Pizzeria Napoli di Note 29-04-26.pdf · application/pdf · 691 KB
-📎 Benisanó Terraza Jose Suegro Santi 10-03-26.pdf · application/pdf · 446 KB
 ━━━ CLIENTE IDEAL Y DIFERENCIACIÓN ━━━
 Cliente ideal:
 🎯 🧠 TU CLIENTE IDEAL (REAL)
@@ -320,7 +280,7 @@ No te dice:
 ❌ “cuánto cuesta lo más barato”
 
 Te dice:
-✔ “tengo unos X €, qué se puede hacer”
+✔ “tengo un presupuesto aproximado, qué se puede hacer”
 
 👉 Este es oro
 
@@ -344,20 +304,17 @@ baños
 cocinas
 terrazas
 
-👉 ticket 3k – 10k
 
 2. Exteriores
 piscinas
 hormigón
 césped
 
-👉 ticket 8k – 30k
 
 3. Comunidades (bien elegidas)
 fachadas
 patios
 
-👉 ticket alto pero más lento
 
 🧠 RESUMEN CLARO
 
@@ -402,7 +359,7 @@ Motivo 2 por el que un cliente te elige: Precio
 Motivo 3 por el que un cliente te elige: Calidad
 Clientes que NO debe atender el bot:
 🔹 Ubicación fuera de zona de servicio
-Reformas y obra: Llíria y todo el Camp de Túria. Electricidad: además, Paterna (incluida La Cañada) y Burjassot. No trabajamos en Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba. Fuera de esas zonas solo se valoran reformas de gran envergadura (nunca en las zonas donde no trabajamos).
+Reformas y obra: Llíria y todo el Camp de Túria. Electricidad: además, Paterna (incluida La Cañada) y Burjassot. No trabajamos en Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba. Fuera de esas zonas no se da servicio: "Por ahora no damos servicio en esa zona. ¡Gracias por pensar en nosotros!"
 
 🔹 Solicitudes sin información mínima
 No gestionamos presupuestos cuando el cliente no facilita datos básicos como:

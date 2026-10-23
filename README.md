@@ -1,13 +1,13 @@
 # Renovebot
 
-Chatbot de Renoveplac (reformas integrales en Lliria, Valencia) con:
+Chatbot de Renoveplac (reformas, obra y electricidad en Llíria, Valencia) con:
 
 - Chat embebible en `renoveplac.com` (widget flotante).
 - **Canal WhatsApp** vía Cloud API de Meta (mismo bot, mismo histórico, en el número de la empresa).
 - Recogida del formulario de la web → conversación iniciada por el bot + email al cliente.
 - Persistencia de conversaciones en **Supabase** (incluye subida de imágenes del chat a Storage).
 - **Panel admin** (`/admin`) para ver, responder y pausar el bot por conversación.
-- Presupuestos orientativos con botón de **aceptar** en web y respuesta `ACEPTO` por WhatsApp; en ambos casos envía un email a `contacto@renoveplac.com`.
+- El bot **no da precios ni presupuestos**: comprueba la zona, recoge los datos del cliente y avisa al equipo por email para que prepare el presupuesto detallado.
 - Base de conocimiento del bot en `info/` (datos de la empresa, FAQs).
 
 ## Estructura
@@ -16,7 +16,7 @@ Chatbot de Renoveplac (reformas integrales en Lliria, Valencia) con:
 .
 ├── server.js              Express con todos los endpoints (chat web, admin, formulario WP, WhatsApp)
 ├── lib/
-│   ├── claude.js          Llamada a Anthropic + tools create_budget y notify_human
+│   ├── claude.js          Llamada a Anthropic + tools register_request y notify_human
 │   ├── db.js              Cliente Supabase
 │   ├── email.js           Envio por Resend API + respaldo SMTP
 │   ├── lead.js            Extraccion de datos del cliente y tipo de obra/servicio
@@ -215,35 +215,27 @@ Todo lo que sabe el bot sobre la empresa vive en `info/`:
 
 Edita estos archivos y redeploya. El bot los carga al arrancar y los inyecta en el system prompt.
 
-## 8. Flujo de presupuestos
+## 8. Flujo de solicitudes (todos los servicios)
 
-1. El bot cualifica al cliente.
-2. Cuando hay alcance + zona + intención, llama a la tool `create_budget` y se inserta en la BD (`status = pending`).
-3. El chat muestra una tarjeta con título, importe y botón **Aceptar presupuesto**.
-4. Al aceptar:
-   - El presupuesto pasa a `status = accepted`.
-   - Se actualiza la conversación a `budget_accepted`.
-   - Se envía un email a `contacto@renoveplac.com` con todos los datos del cliente y el presupuesto, con `Reply-To` apuntando al cliente.
-   - El bot añade un mensaje confirmando.
+El bot nunca da precios, rangos en euros, "desde X €" ni presupuestos con cifras. La única excepción son las placas solares: envía al simulador gratuito de la web. El servidor quita del mensaje del modelo cualquier frase con importes o plazos y añade "Te preparamos un presupuesto detallado por partidas, sin compromiso."
 
-### Servicios de electricidad (sin precios)
+1. Comprueba el pueblo (ver **Zonas**). Si está fuera de zona responde "Por ahora no damos servicio en esa zona. ¡Gracias por pensar en nosotros!".
+2. Recoge, sin repetir los datos que ya tenga: qué necesita, pueblo, dirección de la obra (y la ubicación de Google Maps o de WhatsApp si puede), nombre, teléfono, fotos o vídeo (sin insistir), si es el propietario o tiene permiso (si no, no se puede hacer el servicio) y cómo nos ha conocido.
+3. Llama a la tool `register_request`: el servidor valida los datos (zona, teléfono dado por el cliente, permiso del propietario), los guarda en la conversación (`status = request_received`) y envía un email a la empresa.
+4. Cierra con: "Perfecto, ya tengo todo lo necesario. Un profesional de nuestro equipo revisa tu caso y te contactamos para preparar el presupuesto, sin compromiso."
 
-Renoveplac SLU es empresa instaladora autorizada de baja tensión (RII 10-B-D09-46098149). Para boletín eléctrico (CIE), instalación eléctrica completa, cuadro y aumento de potencia, puntos de recarga, placas solares en unifamiliares y casetas de campo o de aperos, y averías:
+Si el cliente pide hablar con una persona, el bot le pide nombre y teléfono (solo los que falten) y le da el 631 18 88 13; cuando los tiene, avisa al equipo por email y pausa el bot.
 
-1. El bot nunca da precios, rangos ni "desde X €" ni usa `create_budget` (el servidor lo bloquea y sustituye cualquier importe por "Te preparamos un presupuesto detallado por partidas, sin compromiso").
-2. Recoge nombre, teléfono, pueblo, dirección de la obra, qué necesita (con fotos o un vídeo corto si es posible) y cómo nos ha conocido.
-3. Llama a la tool `register_electric_request`: el servidor valida los datos, los guarda en la conversación y envía un email a la empresa.
-4. Cierra con: "Un profesional de nuestro equipo revisa tu caso y te contactamos para preparar el presupuesto, sin compromiso."
+Si pregunta por el boletín, el servidor añade al final "Puedes encontrar más información en: renoveplac.com/boletin-electrico-cie/". Si pregunta por placas solares, añade el enlace al simulador (renoveplac.com/placas-solares/), salvo que sea para un piso o una comunidad.
 
-Siempre que el cliente pregunta por el boletín, el servidor añade al final "Puedes encontrar más información en: renoveplac.com/boletin-electrico-cie/". Si pregunta por placas solares, añade el enlace al simulador gratuito (renoveplac.com/placas-solares/), salvo que sea para un piso o una comunidad.
-
-Si el cliente pide una reforma que incluye electricidad (baño, cocina, reforma integral), sigue el flujo de reformas con presupuesto orientativo.
+Los presupuestos creados antes de este cambio siguen visibles y se pueden aceptar (botón en la web o `ACEPTO` por WhatsApp), pero el bot ya no crea presupuestos nuevos.
 
 ### Zonas
 
 - Reformas y obra: Llíria y todo el Camp de Túria.
 - Electricidad: además, Paterna (incluida La Cañada) y Burjassot.
-- No trabajamos en Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba: el servidor responde con un mensaje fijo y amable (`lib/zones.js`).
+- No trabajamos en Riba-roja de Túria, Serra, Gátova, Náquera, Bugarra ni Pedralba: el servidor responde con un mensaje fijo (`lib/zones.js`).
+- En Paterna y Burjassot, `register_request` rechaza las solicitudes que no son de electricidad.
 
 ## 9. Panel de admin
 
@@ -276,11 +268,11 @@ Si el cliente pide una reforma que incluye electricidad (baño, cocina, reforma 
 | `/api/admin/conversations/:id/close` | POST | Cerrar |
 | `/api/admin/conversations/:id/delete` | POST | Eliminar conversación |
 | `/api/whatsapp/webhook` | GET | Verificación del webhook (handshake con `hub.verify_token`) |
-| `/api/whatsapp/webhook` | POST | Recepción de mensajes entrantes de WhatsApp (texto, fotos y vídeos) |
+| `/api/whatsapp/webhook` | POST | Recepción de mensajes entrantes de WhatsApp (texto, fotos, vídeos y ubicación) |
 
 ## 11. Conectar WhatsApp (Cloud API de Meta)
 
-El bot recibe y responde mensajes en el número de la empresa usando la **Cloud API** de Meta. Cuando un cliente escribe al WhatsApp, el webhook `POST /api/whatsapp/webhook` recibe el mensaje, lo guarda en la misma tabla `bot_conversations` (con `channel = 'whatsapp'`), llama al modelo y responde por WhatsApp. Si el bot genera un presupuesto, lo manda como una tarjeta de texto pidiendo que el cliente responda `ACEPTO` para confirmarlo.
+El bot recibe y responde mensajes en el número de la empresa usando la **Cloud API** de Meta. Cuando un cliente escribe al WhatsApp, el webhook `POST /api/whatsapp/webhook` recibe el mensaje, lo guarda en la misma tabla `bot_conversations` (con `channel = 'whatsapp'`), llama al modelo y responde por WhatsApp. Cuando tiene todos los datos, registra la solicitud y avisa al equipo por email.
 
 ### Requisitos previos en Meta
 
@@ -315,8 +307,8 @@ El bot recibe y responde mensajes en el número de la empresa usando la **Cloud 
 
 - Envía un WhatsApp desde tu móvil al número de Renoveplac.
 - En los logs de Vercel debería aparecer `[whatsapp] webhook verificado` (la primera vez) y, después, los mensajes entrantes.
-- El bot responde por WhatsApp aplicando las mismas reglas que en la web: cualifica el lead, pide datos y termina con un presupuesto orientativo.
-- Si el bot genera un presupuesto y el cliente responde `ACEPTO` (o variaciones: "si acepto", "aceptar"...), se marca como aceptado y se manda el email a `contacto@renoveplac.com`.
+- El bot responde por WhatsApp aplicando las mismas reglas que en la web: comprueba la zona, recoge los datos y avisa al equipo para que prepare el presupuesto.
+- Si el cliente tenía un presupuesto antiguo pendiente y responde `ACEPTO` (o variaciones: "si acepto", "aceptar"...), se marca como aceptado y se manda el email a la empresa.
 
 ### Notas
 

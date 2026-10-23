@@ -333,6 +333,7 @@
       }
       .badge-active { background: var(--success-soft); color: var(--success); }
       .badge-budget_sent { background: var(--brand-orange-tint); color: var(--brand-orange-hover); }
+      .badge-request_received { background: var(--brand-orange-tint); color: var(--brand-orange-hover); }
       .badge-budget_accepted { background: #cce4ff; color: #0a3d6c; }
       .badge-closed { background: #99a2b5; color: #fff; }
       .badge-bot-paused { background: #ff9b9b; color: #5a0e0e; }
@@ -867,6 +868,7 @@
           <div class="filters" id="filters">
             <button class="filter-chip active" data-filter="all">Todas <span class="count" id="count-all">0</span></button>
             <button class="filter-chip" data-filter="active">Activas <span class="count" id="count-active">0</span></button>
+            <button class="filter-chip" data-filter="request_received">Solicitud recibida <span class="count" id="count-request_received">0</span></button>
             <button class="filter-chip" data-filter="budget_sent">Presupuesto <span class="count" id="count-budget_sent">0</span></button>
             <button class="filter-chip" data-filter="budget_accepted">Aceptado <span class="count" id="count-budget_accepted">0</span></button>
             <button class="filter-chip" data-filter="closed">Cerradas <span class="count" id="count-closed">0</span></button>
@@ -957,7 +959,7 @@
         return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
       }
       function statusLabel(s) {
-        return ({ active: "Activa", budget_sent: "Presupuesto enviado", budget_accepted: "Presupuesto aceptado", closed: "Cerrada" })[s] || "Activa";
+        return ({ active: "Activa", request_received: "Solicitud recibida", budget_sent: "Presupuesto enviado", budget_accepted: "Presupuesto aceptado", closed: "Cerrada" })[s] || "Activa";
       }
       function sourceLabel(c) {
         if (c.channel === "whatsapp" || c.source === "whatsapp") return "WhatsApp";
@@ -1107,7 +1109,7 @@
         }
       }
       function updateCounts() {
-        const counts = { all: allConversations.length, active: 0, budget_sent: 0, budget_accepted: 0, closed: 0 };
+        const counts = { all: allConversations.length, active: 0, request_received: 0, budget_sent: 0, budget_accepted: 0, closed: 0 };
         allConversations.forEach((c) => { const s = c.status || "active"; if (counts[s] != null) counts[s]++; });
         Object.entries(counts).forEach(([k, v]) => { const el = document.getElementById("count-" + k); if (el) el.textContent = v; });
         requestAnimationFrame(updateFilterScrollButtons);
@@ -1375,6 +1377,11 @@
         // Videos de WhatsApp: el contenido trae una linea "Vídeo: URL".
         let videoHtml = "";
         const videoMatch = /\nVídeo: (https?:\/\/\S+)/.exec(textVal);
+        const locationMatch = /\nUbicación: (https?:\/\/\S+)/.exec(textVal);
+        if (locationMatch) {
+          textVal = textVal.replace(locationMatch[0], "");
+          videoHtml += '<a href="' + escapeHtml(locationMatch[1]) + '" target="_blank" rel="noopener">Ver ubicación en Google Maps</a><br>';
+        }
         if (videoMatch) {
           textVal = textVal.replace(videoMatch[0], "");
           videoHtml = '<video src="' + escapeHtml(videoMatch[1]) + '" controls preload="metadata" style="display:block;max-width:280px;max-height:280px;border-radius:8px;margin-bottom:6px;"></video>' +
