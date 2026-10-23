@@ -8,7 +8,13 @@ const { supabase, SUPABASE_URL } = require("./lib/db");
 const { sendEmail } = require("./lib/email");
 const { buildSystemPrompt, getSpanishGreeting } = require("./lib/prompt");
 const { runConversation } = require("./lib/claude");
-const { INVALID_PHONE_REPLY, extractSpanishPhone, getPhoneSubmissionStatus, normalizeSpanishPhone } = require("./lib/phone");
+const {
+  INVALID_PHONE_REPLY,
+  PHONE_REQUEST_REGEX,
+  extractSpanishPhone,
+  getPhoneSubmissionStatus,
+  normalizeSpanishPhone,
+} = require("./lib/phone");
 const { OUT_OF_AREA_REPLY, findElectricOnlyTown, findExcludedTown } = require("./lib/zones");
 const {
   buildLeadPatch,
@@ -739,6 +745,7 @@ function buildContext(conv) {
   if (conv.initial_message) parts.push(`Mensaje original del formulario: ${conv.initial_message}`);
   if (conv.customer_town) parts.push(`Pueblo de la obra: ${conv.customer_town}`);
   if (conv.work_address) parts.push(`Direccion de la obra: ${conv.work_address}`);
+  if (conv.work_dimensions) parts.push(`Medidas aproximadas: ${conv.work_dimensions}`);
   if (conv.lead_source) parts.push(`Como nos ha conocido: ${conv.lead_source}`);
   const excludedTown = findExcludedTown(conv.customer_postal_code) || findExcludedTown(conv.customer_town);
   if (excludedTown) {
@@ -760,7 +767,7 @@ const REQUEST_CLOSING_MESSAGE =
   "Perfecto, ya tengo todo lo necesario. Un profesional de nuestro equipo revisa tu caso y te contactamos para preparar el presupuesto, sin compromiso.";
 const NO_PRICE_MESSAGE = "Te preparamos un presupuesto detallado por partidas, sin compromiso.";
 const COMPANY_PHONE_TEXT = "631 18 88 13";
-const OPTIONAL_LEAD_FIELDS = ["work_address", "lead_source"];
+const OPTIONAL_LEAD_FIELDS = ["work_address", "work_dimensions", "lead_source"];
 
 const PRICE_PATTERNS = [
   /\d(?:[\d.\s]*\d)?(?:[,.]\d{1,2})?\s*(?:€|eur\b|euros?\b)/i,
@@ -845,11 +852,20 @@ async function updateConversationWithOptionalFields(conv, patch) {
   return { savedOptionalFields: false };
 }
 
+// Error de register_request: el mensaje va al modelo y clientQuestion es lo que
+// se pregunta al cliente si el modelo intenta cerrar sin tener la solicitud.
+function requestError(message, clientQuestion) {
+  const err = new Error(message);
+  err.clientQuestion = clientQuestion;
+  return err;
+}
+
 async function registerRequest(input, conv, fullConv, channel) {
   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
   const category = input?.category === "electricidad" ? "electricidad" : "reformas_obra";
   const service = clean(input?.service).slice(0, 80);
   const need = clean(input?.need);
+  const dimensions = clean(input?.dimensions);
   const town = clean(input?.town);
   const address = clean(input?.address);
   const location = clean(input?.location);
@@ -858,34 +874,67 @@ async function registerRequest(input, conv, fullConv, channel) {
   const phone = extractSpanishPhone(input?.phone);
   const messages = fullConv?.messages || conv.messages || [];
 
-  if (service.length < 3 || need.length < 3) throw new Error("Falta que necesita el cliente. Preguntaselo.");
-  if (town.length < 2) throw new Error("Falta el pueblo de la obra. Pideselo y compruebalo con las zonas antes de seguir.");
+  if (service.length < 3 || need.length < 3) {
+    throw requestError("Falta que necesita el cliente. Preguntaselo.", "¿Qué trabajo necesitas exactamente?");
+  }
+  if (category !== "electricidad" && dimensions.length < 2) {
+    throw requestError(
+      "Faltan las medidas o dimensiones aproximadas de la zona del trabajo. Pideselas (si no las sabe exactas, una estimacion).",
+      "¿Qué medidas aproximadas tiene la zona del trabajo? Por ejemplo, los metros cuadrados. Si no las sabes exactas, me vale una estimación."
+    );
+  }
+  if (town.length < 2) {
+    throw requestError(
+      "Falta el pueblo de la obra. Pideselo y compruebalo con las zonas antes de seguir.",
+      "¿En qué pueblo está la obra?"
+    );
+  }
   const excludedTown = findExcludedTown(town);
   if (excludedTown) {
-    throw new Error(`No trabajamos en ${excludedTown}. Responde exactamente: "${OUT_OF_AREA_REPLY}"`);
+    throw requestError(`No trabajamos en ${excludedTown}. Responde exactamente: "${OUT_OF_AREA_REPLY}"`, OUT_OF_AREA_REPLY);
   }
   const electricOnlyTown = findElectricOnlyTown(town);
   if (electricOnlyTown && category !== "electricidad") {
-    throw new Error(
-      `En ${electricOnlyTown} solo hacemos electricidad, no reformas ni obra. Responde exactamente: "${OUT_OF_AREA_REPLY}"`
+    throw requestError(
+      `En ${electricOnlyTown} solo hacemos electricidad, no reformas ni obra. Responde exactamente: "${OUT_OF_AREA_REPLY}"`,
+      OUT_OF_AREA_REPLY
     );
   }
-  if (address.length < 3) throw new Error("Falta la direccion de la obra. Pidesela al cliente.");
+  if (address.length < 3) {
+    throw requestError(
+      "Falta la direccion completa de la obra. Pidesela al cliente.",
+      "¿Cuál es la dirección completa de la obra? Calle, número del portal y, si aplica, piso y puerta."
+    );
+  }
   const currentName = hasValidCustomerName(conv) ? conv.customer_name : "";
   if (!currentName && (!name || isLikelyInvalidCustomerName(name))) {
-    throw new Error("Falta el nombre del cliente. Pideselo antes de registrar la solicitud.");
+    throw requestError("Falta el nombre del cliente. Pideselo antes de registrar la solicitud.", "¿Me dices tu nombre?");
   }
   if (!phone || !conversationMentionsPhone(fullConv || conv, phone)) {
-    throw new Error("Falta un telefono valido que el cliente haya dado (9 cifras o +34). Pideselo antes de registrar la solicitud.");
+    throw requestError(
+      "Falta un telefono valido que el cliente haya dado (9 cifras o +34). Pideselo antes de registrar la solicitud.",
+      "¿Me dejas un teléfono de contacto?"
+    );
   }
   const permissionStatus = getOwnerPermissionStatus(messages);
   if (permissionStatus === "denied") {
-    throw new Error("El cliente no es propietario ni tiene permiso del propietario: no se puede realizar el servicio. Explicaselo con amabilidad.");
+    throw requestError(
+      "El cliente no es propietario ni tiene permiso del propietario: no se puede realizar el servicio. Explicaselo con amabilidad.",
+      ownerPermissionDeniedMessage()
+    );
   }
   if (input?.owner_confirmed !== true) {
-    throw new Error("Falta confirmar si es el propietario o tiene permiso del propietario. Preguntaselo.");
+    throw requestError(
+      "Falta confirmar si es el propietario o tiene permiso del propietario. Preguntaselo.",
+      "¿Eres el propietario o tienes permiso del propietario?"
+    );
   }
-  if (leadSource.length < 2) throw new Error("Falta como nos ha conocido. Preguntale: ¿Como nos has conocido?");
+  if (leadSource.length < 2) {
+    throw requestError(
+      "Falta como nos ha conocido. Preguntale: ¿Como nos has conocido?",
+      "¿Cómo nos has conocido? (Google, Instagram, recomendación…)"
+    );
+  }
 
   const fullAddress = location ? `${address} · ${location}` : address;
   const patch = {
@@ -894,6 +943,7 @@ async function registerRequest(input, conv, fullConv, channel) {
     work_address: fullAddress,
     lead_source: leadSource,
   };
+  if (category !== "electricidad") patch.work_dimensions = dimensions;
   if (!currentName) patch.customer_name = name;
   if (!conv.customer_phone) patch.customer_phone = phone;
   const saved = await updateConversationWithOptionalFields(conv, patch);
@@ -906,6 +956,7 @@ async function registerRequest(input, conv, fullConv, channel) {
     `Tipo: ${category === "electricidad" ? "Electricidad" : "Reformas y obra"}`,
     `Servicio: ${service}`,
     `Que necesita: ${need}`,
+    ...(category !== "electricidad" ? [`Medidas aproximadas: ${dimensions}`] : []),
     "",
     "Datos del cliente:",
     `- Nombre: ${currentName || name}`,
@@ -918,7 +969,7 @@ async function registerRequest(input, conv, fullConv, channel) {
     `- Como nos ha conocido: ${leadSource}`,
     `- Email: ${conv.customer_email || "(sin email)"}`,
     `- Canal: ${channelLabel}`,
-    saved.savedOptionalFields ? "" : "\nAviso: ejecuta sql/electricidad.sql en Supabase para guardar direccion y origen en el panel.",
+    saved.savedOptionalFields ? "" : "\nAviso: ejecuta sql/electricidad.sql en Supabase para guardar direccion, medidas y origen en el panel.",
     "",
     `Conversacion completa: ${PUBLIC_URL}/admin#${conv.id}`,
   ].join("\n");
@@ -937,6 +988,10 @@ async function registerRequest(input, conv, fullConv, channel) {
 function finalizeBotReply(result, userMessage, conv) {
   if (result.request) return REQUEST_CLOSING_MESSAGE;
   let botReply = sanitizeBotReply(result.text || "");
+  // Solo se cierra cuando la solicitud se ha registrado de verdad.
+  if (/ya tengo todo lo necesario|te contactamos para preparar el presupuesto/.test(normalizeLooseText(botReply))) {
+    botReply = result.requestError?.clientQuestion || "Antes de terminar, ¿me confirmas los datos que me faltan de la obra?";
+  }
   if (looksLikeNoPhotoPermissionConfusion(botReply, userMessage)) {
     botReply = buildNoPhotoContinueReply(conv);
   }
@@ -1059,7 +1114,7 @@ function getFastWhatsappPendingReply(message, conv) {
   const firstName = getFirstName(conv);
   const greeting = `${getSpanishGreeting()}${firstName ? `, ${firstName}` : ""}.`;
 
-  if (/\btelefono|movil|whatsapp|numero\b/.test(pending)) {
+  if (PHONE_REQUEST_REGEX.test(pending)) {
     return `${greeting}\n\nPara seguir necesito tu telefono con 9 cifras, por ejemplo 612 345 678, o con prefijo +34.`;
   }
   if (/\bnombre\b|\bcomo te llamas\b/.test(pending)) {
@@ -1081,7 +1136,7 @@ function getFastWhatsappPendingReply(message, conv) {
 function botRecentlyAskedForPhone(messages) {
   if (!Array.isArray(messages)) return false;
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  return /\b(tel[eé]fono|m[oó]vil|whats(?:app)?|n[uú]mero)\b/i.test(lastAssistant?.content || "");
+  return PHONE_REQUEST_REGEX.test(lastAssistant?.content || "");
 }
 
 async function updateLeadData(conv, patch) {

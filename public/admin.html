@@ -1252,6 +1252,7 @@
           { label: "Código postal", value: conv.customer_postal_code },
           { label: "Pueblo", value: conv.customer_town, optional: true },
           { label: "Dirección obra", value: conv.work_address, optional: true },
+          { label: "Medidas", value: conv.work_dimensions, optional: true },
           { label: "Cómo nos conoció", value: conv.lead_source, optional: true },
           { label: "Solicitudes email", value: conv.lead_stats ? String(conv.lead_stats.budget_request_count || 0) : "" },
           { label: "Origen", value: sourceLabel(conv) },
