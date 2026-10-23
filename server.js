@@ -13,6 +13,7 @@ const {
   PHONE_REQUEST_REGEX,
   extractSpanishPhone,
   getPhoneSubmissionStatus,
+  looksLikeBarePhoneAttempt,
   normalizeSpanishPhone,
 } = require("./lib/phone");
 const { OUT_OF_AREA_REPLY, findElectricOnlyTown, findExcludedTown } = require("./lib/zones");
@@ -2377,7 +2378,7 @@ app.post("/api/chat", async (req, res) => {
     const phoneStatus = getPhoneSubmissionStatus(userMessage);
     const phoneAttempted =
       !leadPatch.customer_email &&
-      (phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && /\d/.test(userMessage)));
+      (phoneStatus.attempted || (botRecentlyAskedForPhone(conv.messages) && looksLikeBarePhoneAttempt(userMessage)));
 
     if (conv.bot_enabled !== false && phoneAttempted && !phoneStatus.valid) {
       return reply(await insertAssistantReply(conv, INVALID_PHONE_REPLY));
@@ -3164,7 +3165,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     const phoneStatus = getPhoneSubmissionStatus(parseableMessage);
     const phoneAttempted =
       !leadPatch.customer_email &&
-      (phoneStatus.attempted || (botRecentlyAskedForPhone(messagesWithCurrent) && /\d/.test(parseableMessage)));
+      (phoneStatus.attempted || (botRecentlyAskedForPhone(messagesWithCurrent) && looksLikeBarePhoneAttempt(parseableMessage)));
     if (phoneAttempted && !phoneStatus.valid) {
       await sendReply(INVALID_PHONE_REPLY, "telefono invalido respondido");
       return;
